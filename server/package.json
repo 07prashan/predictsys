@@ -1,0 +1,15 @@
+{
+  "name": "predictsys-server",
+  "version": "1.0.0",
+  "description": "Express API + website for the football prediction system. Reads predictions from the SQLite database that predict.py (Python) writes to.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "warm-logos": "node warm_logos.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.21.0"
+  }
+}

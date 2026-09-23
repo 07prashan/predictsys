@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Daily football predictions across 17 divisions in 11 European countries from an Elo + gradient boosting + Poisson ensemble, with a public track record.">
+  <meta name="theme-color" content="#123f3a">
+  <title>PredictSys — Football predictions</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="mask-icon" href="favicon.svg" color="#1f7a73">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Shared brand mark, reused via <use> in the header and footer so it's defined once. -->
+  <svg class="sr-only" width="0" height="0" aria-hidden="true">
+    <defs>
+      <symbol id="logo-mark" viewBox="0 0 40 40">
+        <linearGradient id="logo-bg" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#249089"/>
+          <stop offset="100%" stop-color="#123f3a"/>
+        </linearGradient>
+        <marker id="logo-arrowhead" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#f5b942"/>
+        </marker>
+        <rect width="40" height="40" rx="10" fill="url(#logo-bg)"/>
+        <circle cx="15.5" cy="24.5" r="7.2" fill="none" stroke="#eef7f5" stroke-width="2.1"/>
+        <path d="M8.5,29.5 L17.5,20.5" fill="none" stroke="#eef7f5" stroke-width="1.3" stroke-linecap="round" opacity="0.55"/>
+        <path d="M12,17.8 L19,17.8" fill="none" stroke="#eef7f5" stroke-width="1.3" stroke-linecap="round" opacity="0.55"/>
+        <path d="M8,30 L18.5,19 L29,9.5" fill="none" stroke="#f5b942" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#logo-arrowhead)"/>
+      </symbol>
+    </defs>
+  </svg>
+
+  <a class="skip-link" href="#main-content">Skip to content</a>
+
+  <header class="site-header" id="site-header">
+    <div class="wrap header-inner">
+      <div class="brand">
+        <svg class="brand-mark" width="40" height="40" aria-hidden="true"><use href="#logo-mark"></use></svg>
+        <span class="brand-text">
+          <h1 class="brand-name">Predict<span class="brand-accent">Sys</span></h1>
+          <p class="tagline">Elo + gradient boosting + Poisson ensemble, across 17 divisions in 11 countries</p>
+        </span>
+      </div>
+    </div>
+
+    <nav class="tabs wrap" role="tablist" aria-label="Sections">
+      <button class="tab-btn active" data-tab="upcoming" role="tab" aria-selected="true" aria-controls="upcoming" id="tab-upcoming">
+        <svg class="tab-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="18" rx="2"/>
+          <line x1="16" y1="2" x2="16" y2="6"/>
+          <line x1="8" y1="2" x2="8" y2="6"/>
+          <line x1="3" y1="10" x2="21" y2="10"/>
+        </svg>
+        <span>Upcoming</span>
+      </button>
+      <button class="tab-btn" data-tab="track-record" role="tab" aria-selected="false" aria-controls="track-record" id="tab-track-record" tabindex="-1">
+        <svg class="tab-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="6" y1="20" x2="6" y2="15"/>
+          <line x1="12" y1="20" x2="12" y2="9"/>
+          <line x1="18" y1="20" x2="18" y2="4"/>
+        </svg>
+        <span>Track Record</span>
+      </button>
+    </nav>
+  </header>
+
+  <main class="wrap" id="main-content">
+    <section id="upcoming" class="tab-panel active" role="tabpanel" aria-labelledby="tab-upcoming" tabindex="0">
+      <div class="view-toggle" role="group" aria-label="Group predictions by">
+        <button class="view-toggle-btn active" data-view="date" aria-pressed="true">By Date</button>
+        <button class="view-toggle-btn" data-view="country" aria-pressed="false">By Country</button>
+      </div>
+      <div id="upcoming-content" aria-live="polite">
+        <div class="skeleton-grid" aria-hidden="true">
+          <div class="skeleton-card">
+            <div class="skel" style="width:35%;height:11px;border-radius:999px;"></div>
+            <div class="skel" style="width:85%;height:18px;margin-top:14px;"></div>
+            <div class="skel" style="width:60%;height:8px;margin-top:14px;border-radius:999px;"></div>
+            <div class="skel" style="width:100%;height:44px;margin-top:14px;"></div>
+          </div>
+          <div class="skeleton-card">
+            <div class="skel" style="width:35%;height:11px;border-radius:999px;"></div>
+            <div class="skel" style="width:85%;height:18px;margin-top:14px;"></div>
+            <div class="skel" style="width:60%;height:8px;margin-top:14px;border-radius:999px;"></div>
+            <div class="skel" style="width:100%;height:44px;margin-top:14px;"></div>
+          </div>
+          <div class="skeleton-card">
+            <div class="skel" style="width:35%;height:11px;border-radius:999px;"></div>
+            <div class="skel" style="width:85%;height:18px;margin-top:14px;"></div>
+            <div class="skel" style="width:60%;height:8px;margin-top:14px;border-radius:999px;"></div>
+            <div class="skel" style="width:100%;height:44px;margin-top:14px;"></div>
+          </div>
+        </div>
+        <span class="sr-only">Loading predictions…</span>
+      </div>
+    </section>
+
+    <section id="track-record" class="tab-panel" role="tabpanel" aria-labelledby="tab-track-record" tabindex="0">
+      <div id="scoreboard-content" aria-live="polite">
+        <div class="scoreboard-grid" aria-hidden="true">
+          <div class="skeleton-card">
+            <div class="skel" style="width:50%;height:11px;"></div>
+            <div class="skel" style="width:40%;height:26px;margin-top:12px;"></div>
+            <div class="skel" style="width:70%;height:10px;margin-top:10px;"></div>
+          </div>
+          <div class="skeleton-card">
+            <div class="skel" style="width:50%;height:11px;"></div>
+            <div class="skel" style="width:40%;height:26px;margin-top:12px;"></div>
+            <div class="skel" style="width:70%;height:10px;margin-top:10px;"></div>
+          </div>
+          <div class="skeleton-card">
+            <div class="skel" style="width:50%;height:11px;"></div>
+            <div class="skel" style="width:40%;height:26px;margin-top:12px;"></div>
+            <div class="skel" style="width:70%;height:10px;margin-top:10px;"></div>
+          </div>
+        </div>
+        <span class="sr-only">Loading track record…</span>
+      </div>
+      <div id="history-content"></div>
+    </section>
+  </main>
+
+  <footer class="wrap">
+    <div class="footer-brand">
+      <svg class="brand-mark small" width="22" height="22" aria-hidden="true"><use href="#logo-mark"></use></svg>
+      <span>PredictSys</span>
+    </div>
+    <p>Predictions generated daily by a Python ensemble (Elo, gradient boosting, Poisson goal model). This page just reads the results.</p>
+  </footer>
+
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Details">
+      <button class="modal-close" id="modal-close" aria-label="Close">&times;</button>
+      <div id="modal-content"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

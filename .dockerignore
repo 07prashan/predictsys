@@ -1,0 +1,11 @@
+.venv/
+node_modules/
+server/node_modules/
+data/
+__pycache__/
+**/__pycache__/
+*.pyc
+.git/
+.vscode/
+.claude/
+server/.env
