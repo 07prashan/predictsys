@@ -64,11 +64,11 @@ function teamWithLogo(name, logoUrl, league) {
 
 // The last five results as coloured dots, oldest to newest (so the right-most is the latest).
 const FORM_WORD = { W: "win", D: "draw", L: "loss" };
-function formDots(form) {
+function formDots(form, mini = false) {
   if (!form) return "";
-  const dots = [...form].map((r) => `<i class="fd ${r}">${r}</i>`).join("");
+  const dots = [...form].map((r) => `<i class="fd ${r}">${mini ? "" : r}</i>`).join("");
   const spoken = [...form].map((r) => FORM_WORD[r]).join(", ");
-  return `<span class="form-dots" role="img" aria-label="Recent form, oldest to newest: ${spoken}">${dots}</span>`;
+  return `<span class="form-dots${mini ? " mini" : ""}" role="img" aria-label="Recent form, oldest to newest: ${spoken}">${dots}</span>`;
 }
 
 function isTennis(m) {
@@ -118,7 +118,7 @@ function formatDateWithYear(iso) {
 }
 
 function formatTime(ms) {
-  return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
 // "Sat, Oct 3 · 19:45" in the viewer's own timezone, or just the date for a legacy row with no kickoff time.
@@ -217,7 +217,53 @@ function byKickoff(a, b) {
   return (a.start ?? 0) - (b.start ?? 0) || a.home_team.localeCompare(b.home_team);
 }
 
-// ---- Match cards ----
+// ---- Tips: the one thing a visitor came for ----
+
+// Confidence tiers drive the colour everywhere (row edge, tip label, meter), so a glance
+// down a list separates strong tips from coin flips without reading a single number.
+const TIERS = [
+  { id: "strong", min: 0.75 },
+  { id: "good", min: 0.65 },
+  { id: "fair", min: 0.55 },
+  { id: "low", min: 0 },
+];
+const tierOf = (p) => TIERS.find((t) => p >= t.min);
+
+// Never print 100%: a model that rounds to certainty is overclaiming, and no tip is a sure thing.
+const tipPct = (p) => `${Math.min(99, Math.round(p * 100))}%`;
+
+// The "Top Tips" view lists only tips at least this confident.
+const TOP_TIP_MIN = 0.65;
+
+const TIP_WORDS = {
+  "Home Win": "Home win",
+  "Away Win": "Away win",
+  "Both Teams to Score": "Both teams score",
+  "Not Both Teams to Score": "Not both score",
+  "Over 2.5 Goals": "Over 2.5 goals",
+  "Under 2.5 Goals": "Under 2.5 goals",
+};
+// A tennis tip is always "<favourite> to win", and the favourite is picked out by name in the
+// row, so the label itself can be short.
+function tipText(m) {
+  return isTennis(m) ? "To win" : TIP_WORDS[m.best_pick_label] || m.best_pick_label;
+}
+
+// Which side the tip backs ('H' / 'A'), so that team can be picked out by name; null when it
+// backs neither (a draw, or a goals market).
+function pickedSide(m) {
+  if (isTennis(m)) return m.predicted_outcome;
+  if (m.best_pick_market !== "Result") return null;
+  return m.best_pick_label.startsWith("Home") ? "H" : m.best_pick_label.startsWith("Away") ? "A" : null;
+}
+
+const ROUND_SHORT = {
+  "Round 1": "R1", "Round 2": "R2", "Round 3": "R3", "Round 4": "R4",
+  "Round of 16": "R16", "Round of 32": "R32", "Round of 64": "R64", "Round of 128": "R128",
+  Quarterfinal: "QF", Semifinal: "SF", Final: "F",
+};
+
+// ---- Match rows ----
 
 function marketChip(label, value) {
   return `<div class="market-chip"><span class="market-label">${esc(label)}</span><span class="market-value">${value}</span></div>`;
@@ -227,68 +273,48 @@ function matchKey(m) {
   return `${m.league}|${m.match_date}|${m.home_team}|${m.away_team}`;
 }
 
-function kickoffBadge(m, showDay) {
-  if (m.start === null) return "";
-  const day = showDay ? `${new Date(m.start).toLocaleDateString(undefined, { weekday: "short" })} ` : "";
-  const started = Date.now() >= m.start ? `<span class="live-badge" title="Kicked off - the result isn't in yet">In play</span>` : "";
-  return `<span class="kickoff">${day}${formatTime(m.start)}</span>${started}`;
-}
-
-function sidesHtml(m) {
-  return `
-    <div class="match-teams">
-      <div class="match-side">
-        ${teamWithLogo(m.home_team, m.home_logo, m.league)}
-        ${formDots(m.home_form)}
-      </div>
-      <span class="vs">vs</span>
-      <div class="match-side away">
-        ${teamWithLogo(m.away_team, m.away_logo, m.league)}
-        ${formDots(m.away_form)}
-      </div>
-    </div>
-  `;
-}
-
-function footballChips(m) {
-  return `
-    ${marketChip("Correct Score", `${m.correct_score_home}-${m.correct_score_away}`)}
-    ${marketChip("BTTS", m.btts_yes_prob >= 0.5 ? `Yes ${pct(m.btts_yes_prob)}` : `No ${pct(1 - m.btts_yes_prob)}`)}
-    ${marketChip("Total Goals", m.over_2_5_prob >= 0.5 ? `Over 2.5 (${pct(m.over_2_5_prob)})` : `Under 2.5 (${pct(1 - m.over_2_5_prob)})`)}
-  `;
-}
-
 function setsOverText(m) {
   return m.sets_over_prob >= 0.5 ? `Over ${m.sets_line} (${pct(m.sets_over_prob)})` : `Under ${m.sets_line} (${pct(1 - m.sets_over_prob)})`;
 }
 
-function tennisChips(m) {
-  return `
-    ${marketChip("Surface", esc(m.surface || "-"))}
-    ${marketChip("Predicted Sets", `${m.correct_score_home}-${m.correct_score_away}`)}
-    ${marketChip("Straight Sets", m.straight_sets_prob >= 0.5 ? `Yes ${pct(m.straight_sets_prob)}` : `No ${pct(1 - m.straight_sets_prob)}`)}
-    ${marketChip("Total Sets", setsOverText(m))}
-  `;
+function rowTeam(name, logo, side, picked, form) {
+  const role = picked === null ? "" : picked === side ? " pick" : " other";
+  return `<div class="row-team${role}">${teamLogo(name, logo)}<span class="name">${esc(name)}</span>${formDots(form, true)}</div>`;
 }
 
-function matchCard(m, opts = {}) {
+// One match on one line: when, who, and - loudest of all - the tip with its confidence. Everything
+// else (probabilities, markets, form, head-to-head) is one tap away in the detail view.
+// opts.showDay: the date matters (a list spanning several days); opts.showComp: the row isn't
+// already under a heading naming its competition.
+function matchRow(m, opts = {}) {
   matchDataByKey.set(matchKey(m), m);
-  // matches always sit under a heading naming their competition, so the card itself only
-  // adds what that doesn't say: the tennis round (football has no equivalent worth a tag)
-  const round = isTennis(m) && m.round ? `<span class="league-tag">${esc(m.round)}</span>` : "";
-  const label = `${m.home_team} vs ${m.away_team}`;
+  const tier = tierOf(m.best_pick_prob);
+  const picked = pickedSide(m);
+  const round = isTennis(m) && m.round ? ROUND_SHORT[m.round] || m.round : "";
+  const started = m.start !== null && Date.now() >= m.start;
+  const weekday = m.start !== null ? new Date(m.start).toLocaleDateString(undefined, { weekday: "short" }) : "";
+  const sub = started
+    ? `<span class="live-badge" title="Kicked off - the result isn't in yet">In play</span>`
+    : opts.showDay
+      ? `<span class="row-sub">${esc(weekday)}</span>`
+      : !opts.showComp && round
+        ? `<span class="row-sub">${esc(round)}</span>`
+        : "";
+  const comp = opts.showComp ? `<span class="row-comp">${esc(m.competition)}${round ? ` · ${esc(round)}` : ""}</span>` : "";
+  const label = `${m.home_team} vs ${m.away_team}. Tip: ${m.best_pick_label}, ${tipPct(m.best_pick_prob)} confidence`;
   return `
-    <article class="match-card clickable" data-match-key="${esc(matchKey(m))}" role="button" tabindex="0" aria-label="View match details: ${esc(label)}">
-      <div class="match-card-top">
-        <span class="match-when">${kickoffBadge(m, opts.showDay)}${round}</span>
-        <span class="best-pick" title="Most confident market for this match">★ ${esc(m.best_pick_label)} (${pct(m.best_pick_prob)})</span>
+    <article class="match-row clickable tier-${tier.id}" data-match-key="${esc(matchKey(m))}" role="button" tabindex="0" aria-label="${esc(label)}">
+      <div class="row-when"><span class="kickoff">${m.start !== null ? formatTime(m.start) : "-"}</span>${sub}</div>
+      <div class="row-teams">
+        ${comp}
+        ${rowTeam(m.home_team, m.home_logo, "H", picked, m.home_form)}
+        ${rowTeam(m.away_team, m.away_logo, "A", picked, m.away_form)}
       </div>
-      ${sidesHtml(m)}
-      <div class="match-result-row">
-        ${probBar(m)}
-        <span class="outcome-tag ${m.predicted_outcome}">${esc(outcomeText(m, m.predicted_outcome))}</span>
+      <div class="row-tip" title="${esc(m.best_pick_label)}">
+        <span class="tip-line"><span class="tip-label">${esc(tipText(m))}</span><span class="tip-pct">${tipPct(m.best_pick_prob)}</span></span>
+        <span class="tip-meter" aria-hidden="true"><i style="width:${Math.round(m.best_pick_prob * 100)}%"></i></span>
       </div>
-      <div class="market-row">${isTennis(m) ? tennisChips(m) : footballChips(m)}</div>
+      <div class="row-extra">${isTennis(m) ? "Likely sets" : "Likely score"} <b>${m.correct_score_home}-${m.correct_score_away}</b></div>
     </article>
   `;
 }
@@ -315,18 +341,18 @@ function competitionGroupHtml(g, opts) {
         <h3>${esc(g.competition)}${slam}</h3>
         <span class="comp-meta">${esc(g.group)} · ${g.matches.length} ${g.matches.length === 1 ? "match" : "matches"}</span>
       </div>
-      <div class="match-grid">${g.matches.map((m) => matchCard(m, opts)).join("")}</div>
+      <div class="match-list">${g.matches.map((m) => matchRow(m, opts)).join("")}</div>
     </section>
   `;
 }
 
-function emptyDayHtml(dayKey, rows) {
+function emptyDayHtml(dayKey, rows, what = "matches scheduled for this selection") {
   const from = todayLocal();
   const next = buildWeekDates(from).find((d) => d.date > dayKey && rows.some((m) => m.local_date === d.date));
   const hint = next
     ? ` Next up: <button class="link-btn" data-goto-day="${next.date}">${esc(next.label)}</button>.`
     : "";
-  return `<div class="empty-state small">No matches scheduled for this selection on ${esc(dayLabel(dayKey, from))}.${hint}</div>`;
+  return `<div class="empty-state small">No ${what} on ${esc(dayLabel(dayKey, from))}.${hint}</div>`;
 }
 
 function dayBodyHtml(dayKey, rows) {
@@ -342,7 +368,7 @@ function resolveDay(rows) {
   return firstWithMatches ? firstWithMatches.date : "all";
 }
 
-function renderDayStrip(rows, activeDay) {
+function renderDayStrip(rows, activeDay, [one, many] = ["match", "matches"]) {
   const strip = document.getElementById("day-strip");
   const counts = new Map();
   for (const m of rows) counts.set(m.local_date, (counts.get(m.local_date) || 0) + 1);
@@ -351,7 +377,7 @@ function renderDayStrip(rows, activeDay) {
     <button class="day-pill ${key === activeDay ? "active" : ""} ${count ? "" : "empty"}" data-day="${key}" aria-pressed="${key === activeDay}">
       <span class="day-name">${esc(top)}</span>
       <span class="day-num">${esc(middle)}</span>
-      <span class="day-count">${count} ${count === 1 ? "match" : "matches"}</span>
+      <span class="day-count">${count} ${count === 1 ? one : many}</span>
     </button>`;
 
   strip.innerHTML =
@@ -359,7 +385,7 @@ function renderDayStrip(rows, activeDay) {
     buildWeekDates(todayLocal())
       .map((d) => pill(d.date, d.weekday, d.dayMonth, counts.get(d.date) || 0))
       .join("");
-  strip.hidden = upcomingView !== "date";
+  strip.hidden = upcomingView === "country";
 }
 
 function renderByDate(el, rows) {
@@ -377,6 +403,29 @@ function renderByDate(el, rows) {
       return `<div class="league-group" data-date="${d.date}"><h2>${esc(d.label)} <span class="day-total">${n} ${n === 1 ? "match" : "matches"}</span></h2>${dayBodyHtml(d.date, rows)}</div>`;
     })
     .join("");
+}
+
+// ---- "Top Tips" view: the strongest tips first, across every competition ----
+
+function renderTopTips(el, rows) {
+  const tips = rows.filter((m) => m.best_pick_prob >= TOP_TIP_MIN);
+  const active = resolveDay(tips);
+  renderDayStrip(tips, active, ["tip", "tips"]);
+
+  const label = active === "all" ? `the next ${DAYS_AHEAD} days` : dayLabel(active, todayLocal());
+  const shown = (active === "all" ? tips : tips.filter((m) => m.local_date === active)).sort(
+    (a, b) => b.best_pick_prob - a.best_pick_prob || byKickoff(a, b)
+  );
+  const minPct = Math.round(TOP_TIP_MIN * 100);
+  el.innerHTML = `
+    <h2 class="day-heading">Top tips <span class="day-total">${esc(label)}</span></h2>
+    <p class="view-note">Tips we're ${minPct}%+ confident in, strongest first.</p>
+    ${
+      shown.length
+        ? `<div class="match-list">${shown.map((m) => matchRow(m, { showComp: true, showDay: active === "all" })).join("")}</div>`
+        : emptyDayHtml(active === "all" ? localDateKey(todayLocal()) : active, tips, `tips of ${minPct}%+ for this selection`)
+    }
+  `;
 }
 
 // ---- "By Competition" view: country / tour -> competition, each with its own date dropdown ----
@@ -410,13 +459,13 @@ function matchesForCompetitionOnDate(key, date) {
 
 function competitionMatchesHtml(matches) {
   return matches.length
-    ? matches.map((m) => matchCard(m)).join("")
+    ? matches.map((m) => matchRow(m)).join("")
     : `<div class="empty-state small">No fixtures scheduled for this day.</div>`;
 }
 
 // Each competition gets its own date dropdown (defaulting to its first day with matches)
 // rather than showing every upcoming day at once - the dropdown only ever re-renders this
-// one competition's match-grid (see setUpCountryDateSelects), never refetching.
+// one competition's match-list (see setUpCountryDateSelects), never refetching.
 function competitionBlockHtml({ key, competition, matches }, weekDates) {
   const counts = new Map();
   for (const m of matches) counts.set(m.local_date, (counts.get(m.local_date) || 0) + 1);
@@ -430,7 +479,7 @@ function competitionBlockHtml({ key, competition, matches }, weekDates) {
         <h3>${esc(competition)}</h3>
         <select class="date-select" data-comp="${esc(key)}" aria-label="Date for ${esc(competition)}">${options}</select>
       </div>
-      <div class="match-grid" data-comp-matches="${esc(key)}">
+      <div class="match-list" data-comp-matches="${esc(key)}">
         ${competitionMatchesHtml(matchesForCompetitionOnDate(key, defaultDate))}
       </div>
     </div>
@@ -497,6 +546,7 @@ function renderUpcoming(force = true) {
 
   renderCategoryChips();
   if (upcomingView === "country") renderByCountry(el, rows);
+  else if (upcomingView === "tips") renderTopTips(el, rows);
   else renderByDate(el, rows);
 }
 
@@ -702,6 +752,16 @@ function formComparison(m) {
   `;
 }
 
+function tipBanner(m) {
+  const tier = tierOf(m.best_pick_prob);
+  return `
+    <div class="modal-tip tier-${tier.id}">
+      <span class="modal-tip-kicker">Our tip</span>
+      <span class="tip-label">${esc(m.best_pick_label)}</span>
+      <span class="tip-pct">${tipPct(m.best_pick_prob)}</span>
+    </div>`;
+}
+
 async function renderMatchDetail(m) {
   const content = document.getElementById("modal-content");
   const tennis = isTennis(m);
@@ -718,6 +778,7 @@ async function renderMatchDetail(m) {
     </div>
     <div class="modal-subtitle">${sub}</div>
     ${final}
+    ${tipBanner(m)}
 
     <div class="match-result-row" style="justify-content:center">
       ${probBar(m)}
