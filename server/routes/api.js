@@ -1,7 +1,8 @@
 const express = require("express");
 const db = require("../db");
-const { getCachedLogo } = require("../logos");
-const { LEAGUE_NAMES, countryOf, competitionOf } = require("../leagues");
+const { logoFor } = require("../logo_lookup");
+const { upcomingFilter } = require("../upcoming");
+const { LEAGUE_NAMES, competitionOf, groupOf } = require("../leagues");
 
 const router = express.Router();
 
@@ -16,31 +17,36 @@ function withExtras(row) {
   return {
     ...rest,
     ...extraMarkets,
-    league_name: LEAGUE_NAMES[row.league] || row.league,
-    country: countryOf(row.league),
-    competition: competitionOf(row.league),
-    // undefined (never looked up) and null (looked up, not found) both mean
-    // "no logo yet" to the frontend - only a real cached URL is worth sending
-    home_logo: getCachedLogo(row.home_team) || null,
-    away_logo: getCachedLogo(row.away_team) || null,
+    // rows from before multi-sport support have no sport - they're all club football
+    sport: row.sport || "football",
+    // the specific competition/tournament where there is one (a Nations League game, a
+    // named tennis event), else the league's own name
+    competition: row.competition || competitionOf(row.league),
+    league_name: row.competition || LEAGUE_NAMES[row.league] || row.league,
+    country: groupOf(row.league),
+    // null means "no logo yet" to the frontend, which then draws an initials badge
+    home_logo: logoFor(row.home_team),
+    away_logo: logoFor(row.away_team),
   };
 }
 
-// Upcoming fixtures we've predicted but that haven't been played yet.
+// Upcoming matches across every sport: not yet settled, and not already over.
 router.get("/predictions", (req, res) => {
+  const filter = upcomingFilter();
   const rows = db
     .prepare(
-      `SELECT league, match_date, home_team, away_team,
+      `SELECT league, sport, competition, round, match_date, kickoff_utc, home_team, away_team,
               prob_home, prob_draw, prob_away, predicted_outcome,
               expected_goals_home, expected_goals_away,
               correct_score_home, correct_score_away,
               btts_yes_prob, over_2_5_prob, markets_json,
               best_pick_market, best_pick_label, best_pick_prob
        FROM predictions
-       WHERE actual_outcome IS NULL
-       ORDER BY match_date ASC`
+       WHERE ${filter.sql}
+       ORDER BY COALESCE(kickoff_utc, match_date) ASC`
     )
-    .all();
+    .all(filter.params);
+  res.set("Cache-Control", "public, max-age=30");
   res.json(rows.map(withExtras));
 });
 
@@ -49,14 +55,14 @@ router.get("/predictions/history", (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 100, 500);
   const rows = db
     .prepare(
-      `SELECT league, match_date, home_team, away_team,
+      `SELECT league, sport, competition, round, match_date, kickoff_utc, home_team, away_team,
               prob_home, prob_draw, prob_away, predicted_outcome, actual_outcome, correct,
               correct_score_home, correct_score_away, btts_yes_prob, over_2_5_prob, markets_json,
               actual_home_goals, actual_away_goals,
               best_pick_market, best_pick_label, best_pick_prob
        FROM predictions
        WHERE actual_outcome IS NOT NULL
-       ORDER BY match_date DESC
+       ORDER BY COALESCE(kickoff_utc, match_date) DESC
        LIMIT ?`
     )
     .all(limit);

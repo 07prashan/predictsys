@@ -7,20 +7,38 @@ set -e
 
 mkdir -p data
 
+# predict.py exits non-zero if any one part (a sport, a feed) failed - but it still saves
+# everything that worked, and the database exists from its first line, so a partial
+# failure must not stop the website coming up.
 if [ ! -f data/predictions.db ]; then
   echo "=== First run - building initial predictions: $(date -u +"%Y-%m-%d %H:%M:%S UTC") ===" >> data/predict_log.txt
-  python3 src/predict.py >> data/predict_log.txt 2>&1
+  python3 src/predict.py >> data/predict_log.txt 2>&1 || echo "First run reported failures - see above" >> data/predict_log.txt
 fi
 
-# How often to re-fetch results and re-predict, in seconds. Override by
-# setting REFRESH_INTERVAL_SECONDS in Railway's service variables.
+# Two cadences, run one after the other (never at the same time - two writers on one
+# SQLite file would fight over its lock):
+#   - a LIGHT refresh (national teams + tennis + settling finished matches from ESPN) is
+#     cheap, so it runs often: finished matches drop off the site, and new fixtures and
+#     tennis draws/order-of-play appear, within about an hour
+#   - a FULL refresh also re-fetches and refits the club-league models, which is slow
+#     and changes slowly, so it runs on the longer interval
+# Override either, in seconds, with service variables.
+LIGHT_REFRESH_INTERVAL_SECONDS="${LIGHT_REFRESH_INTERVAL_SECONDS:-3600}"
 REFRESH_INTERVAL_SECONDS="${REFRESH_INTERVAL_SECONDS:-21600}"
 
 (
+  since_full=0
   while true; do
-    sleep "$REFRESH_INTERVAL_SECONDS"
-    echo "=== Scheduled run: $(date -u +"%Y-%m-%d %H:%M:%S UTC") ===" >> data/predict_log.txt
-    python3 src/predict.py >> data/predict_log.txt 2>&1 || echo "Scheduled run failed - see above" >> data/predict_log.txt
+    sleep "$LIGHT_REFRESH_INTERVAL_SECONDS"
+    since_full=$((since_full + LIGHT_REFRESH_INTERVAL_SECONDS))
+    if [ "$since_full" -ge "$REFRESH_INTERVAL_SECONDS" ]; then
+      since_full=0
+      echo "=== Scheduled full run: $(date -u +"%Y-%m-%d %H:%M:%S UTC") ===" >> data/predict_log.txt
+      python3 src/predict.py >> data/predict_log.txt 2>&1 || echo "Scheduled full run reported failures - see above" >> data/predict_log.txt
+    else
+      echo "=== Scheduled light run: $(date -u +"%Y-%m-%d %H:%M:%S UTC") ===" >> data/predict_log.txt
+      python3 src/predict.py --only intl tennis >> data/predict_log.txt 2>&1 || echo "Scheduled light run reported failures - see above" >> data/predict_log.txt
+    fi
   done
 ) &
 

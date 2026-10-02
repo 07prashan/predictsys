@@ -139,6 +139,29 @@ def _full_market_probs(lam_home: float, lam_away: float, rho: float, max_goals: 
     }
 
 
+def market_probs(lam_home: float, lam_away: float, rho: float = 0.0) -> dict:
+    """Every goal-based market for one match from each side's expected goals - for models
+    (like the national-team one) that produce their own lambdas instead of fitting a
+    per-team GLM the way fit_for_prediction() does."""
+    return _full_market_probs(lam_home, lam_away, rho)
+
+
+def best_pick(row) -> tuple:
+    """Whichever single market is most confident for this match - the result (any model that
+    supplies prob_home/draw/away), both-teams-to-score, or over/under 2.5 goals (both Poisson-
+    only, since Elo and GBM predict the discrete result, not goals). Returns
+    (market, label, probability)."""
+    result = max(
+        [("Result", "Home Win", row["prob_home"]), ("Result", "Draw", row["prob_draw"]), ("Result", "Away Win", row["prob_away"])],
+        key=lambda x: x[2],
+    )
+    btts = row["btts_yes_prob"]
+    btts_pick = ("BTTS", "Both Teams to Score", btts) if btts >= 0.5 else ("BTTS", "Not Both Teams to Score", 1 - btts)
+    over = row["over_2_5_prob"]
+    over_pick = ("Over/Under", "Over 2.5 Goals", over) if over >= 0.5 else ("Over/Under", "Under 2.5 Goals", 1 - over)
+    return max([result, btts_pick, over_pick], key=lambda x: x[2])
+
+
 def _outcome_probs(lam_home: float, lam_away: float, rho: float, max_goals: int = 10) -> tuple:
     full = _full_market_probs(lam_home, lam_away, rho, max_goals)
     return full["A"], full["D"], full["H"]  # order matches OUTCOMES = [A, D, H]
