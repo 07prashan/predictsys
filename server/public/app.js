@@ -19,6 +19,44 @@ const CATEGORIES = [
 ];
 const CATEGORY_ORDER = { leagues: 0, intl: 1, atp: 2, wta: 3 };
 
+// ---- Data: static JSON files written by predict.py (src/site_export.py) ----
+
+// Always revalidated: the files are replaced every few hours, and a stale copy would keep
+// showing matches that are over.
+async function getJson(path) {
+  const res = await fetch(path, { cache: "no-cache" });
+  if (!res.ok) throw new Error(`${path} answered ${res.status}`);
+  return res.json();
+}
+
+// Team and head-to-head data are split per league, so opening one profile downloads one small
+// file instead of every team of every sport. Cleared whenever the main data is re-fetched.
+const shardCache = new Map();
+function getShard(kind, league) {
+  const path = `data/${kind}/${encodeURIComponent(league)}.json`;
+  if (!shardCache.has(path)) {
+    shardCache.set(
+      path,
+      getJson(path).catch((err) => {
+        shardCache.delete(path); // a failed load must be retryable
+        throw err;
+      })
+    );
+  }
+  return shardCache.get(path);
+}
+
+// "Updated 12 min ago": if the scheduled refresh ever stalls, visitors can see that for themselves
+// instead of trusting stale tips.
+let generatedAt = null;
+function renderUpdated() {
+  const el = document.getElementById("updated-at");
+  if (!el || generatedAt === null) return;
+  const mins = Math.max(0, Math.round((Date.now() - generatedAt) / 60000));
+  el.textContent = `Updated ${mins < 2 ? "just now" : mins < 90 ? `${mins} min ago` : `${Math.round(mins / 60)} h ago`}`;
+  el.classList.toggle("stale", mins > 360);
+}
+
 function categoryOf(m) {
   if (m.sport === "tennis") return m.league === "WTA" ? "wta" : "atp";
   return m.league === "INT" ? "intl" : "leagues";
@@ -553,11 +591,11 @@ function renderUpcoming(force = true) {
 async function loadUpcoming() {
   const el = document.getElementById("upcoming-content");
   try {
-    const rows = await fetch("/api/predictions").then((r) => {
-      if (!r.ok) throw new Error(`server answered ${r.status}`);
-      return r.json();
-    });
-    upcomingRows = prepare(rows);
+    const data = await getJson("data/predictions.json");
+    shardCache.clear();
+    generatedAt = Date.parse(data.generated_at);
+    upcomingRows = prepare(data.rows);
+    renderUpdated();
     renderUpcoming(false);
   } catch (err) {
     // keep whatever's already on screen if this was just a background refresh
@@ -607,7 +645,9 @@ function setUpViewToggle() {
 // minute), and the data is re-fetched every few minutes to pick up new fixtures/results.
 function setUpAutoRefresh() {
   setInterval(() => {
-    if (!document.hidden) renderUpcoming(false);
+    if (document.hidden) return;
+    renderUpcoming(false);
+    renderUpdated();
   }, 60 * 1000);
   setInterval(() => {
     if (!document.hidden) loadUpcoming();
@@ -619,7 +659,7 @@ function setUpAutoRefresh() {
 async function loadScoreboard() {
   const el = document.getElementById("scoreboard-content");
   try {
-    const rows = await fetch("/api/scoreboard").then((r) => r.json());
+    const rows = await getJson("data/scoreboard.json");
     if (rows.length === 0) {
       el.innerHTML = `<div class="empty-state">No predictions have been settled against a real result yet - the track record fills in once fixtures are played and predict.py's next run grades them.</div>`;
       return;
@@ -652,7 +692,7 @@ function historyLeagueCell(r) {
 async function loadHistory() {
   const el = document.getElementById("history-content");
   try {
-    const rows = prepare(await fetch("/api/predictions/history?limit=100").then((r) => r.json()));
+    const rows = prepare(await getJson("data/history.json"));
     if (rows.length === 0) return;
     el.innerHTML = `
       <h2>Recent graded predictions</h2>
@@ -689,7 +729,7 @@ async function loadHistory() {
 
 // ---- Modal: match detail ----
 
-function formLine(matches) {
+function formLine(matches, league) {
   if (!matches.length) return `<p class="empty-state">No recent matches on record.</p>`;
   return `<ul class="form-list">${matches
     .map(
@@ -697,7 +737,7 @@ function formLine(matches) {
     <li>
       <span class="form-badge ${m.outcome}">${m.outcome}</span>
       <span class="form-date">${formatDate(m.date)}</span>
-      <span class="form-opponent">${m.venue === "H" ? "vs" : "@"} ${teamWithLogo(m.opponent, m.opponent_logo, "")}</span>
+      <span class="form-opponent">${m.venue === "H" ? "vs" : "@"} ${teamWithLogo(m.opponent, m.opponent_logo, league)}</span>
       <span class="form-score">${m.goals_for}-${m.goals_against}</span>
     </li>
   `
@@ -796,9 +836,8 @@ async function renderMatchDetail(m) {
   showModal();
 
   try {
-    const h2h = await fetch(
-      `/api/h2h?home=${encodeURIComponent(m.home_team)}&away=${encodeURIComponent(m.away_team)}&league=${encodeURIComponent(m.league)}`
-    ).then((r) => r.json());
+    const pairs = await getShard("h2h", m.league);
+    const h2h = pairs[`${m.home_team}|${m.away_team}`] || { total: 0, summary: { home_wins: 0, draws: 0, away_wins: 0 }, meetings: [] };
     const slot = document.getElementById("h2h-slot");
     if (h2h.total === 0) {
       slot.innerHTML = `<p class="empty-state">These two haven't met in our records.</p>`;
@@ -838,10 +877,9 @@ async function renderTeamProfile(teamName, league) {
   showModal();
 
   try {
-    const query = league ? `?league=${encodeURIComponent(league)}` : "";
-    const t = await fetch(`/api/team/${encodeURIComponent(teamName)}${query}`).then((r) => r.json());
-    if (t.error) {
-      content.innerHTML = `<p class="empty-state">${esc(t.error)}</p>`;
+    const t = league ? (await getShard("teams", league))[teamName] : null;
+    if (!t) {
+      content.innerHTML = `<p class="empty-state">No profile for ${esc(teamName)} yet.</p>`;
       return;
     }
     const tennis = t.sport === "tennis";
@@ -863,7 +901,7 @@ async function renderTeamProfile(teamName, league) {
       </div>
 
       <p class="section-title">Recent form</p>
-      ${formLine(t.recent_matches)}
+      ${formLine(t.recent_matches, t.league)}
 
       ${
         t.next_fixture

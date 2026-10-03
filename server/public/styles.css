@@ -872,3 +872,6 @@ footer a { color: var(--teal); }
   .tip-pct { font-size: 1.05rem; }
   .modal-tip { flex-wrap: wrap; }
 }
+
+.legend .updated { margin-left: auto; font-variant-numeric: tabular-nums; }
+.legend .updated.stale { color: var(--incorrect); font-weight: 700; }

@@ -1,15 +1,13 @@
 {
   "name": "predictsys-server",
   "version": "1.0.0",
-  "description": "Express API + website for the football prediction system. Reads predictions from the SQLite database that predict.py (Python) writes to.",
+  "description": "Local static file server for the PredictSys website. The site itself is plain static files (public/), fed by the JSON snapshots predict.py writes into public/data.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js",
-    "warm-logos": "node warm_logos.js"
+    "dev": "node --watch server.js"
   },
   "dependencies": {
-    "better-sqlite3": "^11.3.0",
     "express": "^4.21.0"
   }
 }

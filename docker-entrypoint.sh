@@ -1,8 +1,7 @@
 #!/bin/sh
-# Container startup: make sure predictions.db exists before the Express server
-# (which opens it with fileMustExist) ever starts, then keep it fresh on a
-# schedule in the background - the cloud equivalent of run_predict.ps1 +
-# Windows Task Scheduler.
+# Container startup: make sure predictions.db and the website's JSON snapshots exist
+# before the Express server starts serving them, then keep both fresh on a schedule
+# in the background - the cloud equivalent of run_predict.ps1 + Windows Task Scheduler.
 set -e
 
 mkdir -p data
@@ -14,6 +13,10 @@ if [ ! -f data/predictions.db ]; then
   echo "=== First run - building initial predictions: $(date -u +"%Y-%m-%d %H:%M:%S UTC") ===" >> data/predict_log.txt
   python3 src/predict.py >> data/predict_log.txt 2>&1 || echo "First run reported failures - see above" >> data/predict_log.txt
 fi
+
+# The snapshots live in the image's filesystem, not the data volume, so a restart loses
+# them - regenerating them from the (persistent) database takes a couple of seconds.
+python3 src/site_export.py >> data/predict_log.txt 2>&1 || echo "Website data export failed - see above" >> data/predict_log.txt
 
 # Two cadences, run one after the other (never at the same time - two writers on one
 # SQLite file would fight over its lock):

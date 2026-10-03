@@ -104,22 +104,31 @@ def fetch_xg(league_code: str, start_years, force_years: set = None) -> pd.DataF
         for year in start_years:
             path = _cache_path(league_code, year)
             if not path.exists() or year in force_years:
-                rows = []
-                for match in client.league(league=understat_league).get_match_data(season=str(year)):
-                    if not match.get("isResult"):
-                        continue
-                    home = name_map.get(match["h"]["title"], match["h"]["title"])
-                    away = name_map.get(match["a"]["title"], match["a"]["title"])
-                    rows.append(
-                        {
-                            "season": year,
-                            "HomeTeam": home,
-                            "AwayTeam": away,
-                            "home_xg": float(match["xG"]["h"]),
-                            "away_xg": float(match["xG"]["a"]),
-                        }
-                    )
-                pd.DataFrame(rows).to_csv(path, index=False)
-                time.sleep(1.0)  # this is a scraped free resource - don't hammer it
+                try:
+                    rows = []
+                    for match in client.league(league=understat_league).get_match_data(season=str(year)):
+                        if not match.get("isResult"):
+                            continue
+                        home = name_map.get(match["h"]["title"], match["h"]["title"])
+                        away = name_map.get(match["a"]["title"], match["a"]["title"])
+                        rows.append(
+                            {
+                                "season": year,
+                                "HomeTeam": home,
+                                "AwayTeam": away,
+                                "home_xg": float(match["xG"]["h"]),
+                                "away_xg": float(match["xG"]["a"]),
+                            }
+                        )
+                    pd.DataFrame(rows).to_csv(path, index=False)
+                    time.sleep(1.0)  # this is a scraped free resource - don't hammer it
+                except Exception as exc:  # noqa: BLE001 - a scraped site can fail in many ways
+                    # A refresh of a season we already have is a nice-to-have: yesterday's xG is
+                    # nearly as good, and losing the whole club-league run over it (say, from a
+                    # cloud IP the site blocks) would be far worse. With no copy at all, there is
+                    # nothing to fall back to, so the failure stands.
+                    if not path.exists():
+                        raise
+                    print(f"  (couldn't refresh {league_code} {year} xG - using the cached copy: {exc})")
             frames.append(pd.read_csv(path))
     return pd.concat(frames, ignore_index=True)

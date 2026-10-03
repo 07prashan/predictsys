@@ -1,0 +1,106 @@
+name: Refresh predictions
+
+# Runs the prediction pipeline on GitHub's free runners and deploys the resulting static website.
+# The laptop never has to be on. See DEPLOY.md for the one-time setup (secrets, first run).
+on:
+  schedule:
+    - cron: "17 */2 * * *"  # every 2 hours: a LIGHT run - national teams, tennis, settling finished matches
+    - cron: "41 5,17 * * *" # twice a day: a FULL run - also refetches results and refits the club-league models
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "full (everything, ~10 min) or light (national teams + tennis only, ~2 min)"
+        type: choice
+        options: [full, light]
+        default: full
+
+permissions:
+  contents: write # to keep the database on the "state" release
+
+# Never two runs at once: they share one database. A run that's already going is allowed to
+# finish (cancelling it mid-write would waste its work), and the next one queues behind it.
+concurrency:
+  group: refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PYTHONIOENCODING: utf-8
+      # the deploy step is skipped (not failed) until these three secrets exist - see DEPLOY.md
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Pick the mode for this run
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            mode="${{ inputs.mode }}"
+          elif [ "${{ github.event.schedule }}" = "41 5,17 * * *" ]; then
+            mode=full
+          else
+            mode=light
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+          echo "Running in $mode mode"
+
+      # Downloaded history that never changes once fetched (completed seasons, finished days).
+      # Losing it only costs a slower run, so a monthly key is plenty.
+      - name: Restore downloaded history
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/raw
+            data/cache
+          key: history-${{ steps.mode.outputs.month }}
+          restore-keys: history-
+
+      - name: Restore the prediction database
+        run: bash scripts/ci_state.sh restore
+
+      # A part that fails (a feed that's down) must not stop the site refreshing with whatever did
+      # work, so this step is allowed to fail and the final step reports it AFTER deploying.
+      - name: Run the pipeline
+        id: pipeline
+        continue-on-error: true
+        run: |
+          if [ "${{ steps.mode.outputs.mode }}" = "full" ]; then
+            python src/predict.py
+          else
+            python src/predict.py --only intl tennis
+          fi
+
+      - name: Save the prediction database
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci_state.sh save
+
+      - name: Deploy the website to Vercel
+        if: ${{ !cancelled() && env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
+        run: |
+          # never replace a working live site with one that has no data (e.g. the pipeline died before exporting)
+          test -f server/public/data/predictions.json || { echo "::error::No predictions.json was produced - leaving the live site as it is."; exit 1; }
+          npx --yes vercel@latest deploy server/public --prod --yes --token "$VERCEL_TOKEN"
+
+      - name: Say so if secrets are missing
+        if: ${{ env.VERCEL_TOKEN == '' }}
+        run: echo "::notice::Predictions refreshed, but nothing was deployed - add the VERCEL_TOKEN, VERCEL_ORG_ID and VERCEL_PROJECT_ID secrets (see DEPLOY.md)."
+
+      - name: Fail the run if part of the pipeline failed
+        if: ${{ steps.pipeline.outcome == 'failure' }}
+        run: |
+          echo "::error::Part of the pipeline failed (see the 'Run the pipeline' step). The site was still refreshed with everything that worked."
+          exit 1

@@ -29,6 +29,7 @@ from sklearn.linear_model import LogisticRegression
 
 import espn
 import intl
+import site_export
 import storage
 import tennis
 from backtest import OUTCOME_CODES, OUTCOMES, decay_weights
@@ -367,6 +368,12 @@ def main(only: list = None) -> int:
         print(board.to_string(index=False))
     else:
         print("\nNo settled predictions yet - check back after this round of fixtures finishes.")
+
+    # the website is static files: this is what refreshes them (run even after a partial failure,
+    # so whatever did succeed still reaches the site)
+    written = attempt("website data export", lambda: site_export.export_site(conn))
+    if written:
+        print(f"\nWebsite data written to {site_export.SITE_DATA_DIR}: {written}")
     conn.close()
 
     if failures:
