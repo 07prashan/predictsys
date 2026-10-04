@@ -36,7 +36,9 @@ The live address is `https://<your-github-username>.github.io/predictsys/`.
    bash scripts/ci_state.sh pack      # writes data/state/predictions.db.gz and xg.tar.gz
    ```
    On GitHub: Releases -> Draft a new release -> tag `state` -> attach those two files ->
-   **Publish release** (not "Save draft" - the workflow can't see a draft).
+   **Publish release** (not "Save draft" - the workflow can't see a draft). Until a `state` release
+   exists, scheduled runs skip themselves, so nothing can start a fresh history by accident; if you
+   skip this step, the manual run below creates the release.
 6. **Run it once:** Actions -> *Refresh predictions* -> Run workflow -> `full`. The first run takes
    ~15 minutes (it downloads the history). The finished run shows the site's address; after that it
    runs by itself.

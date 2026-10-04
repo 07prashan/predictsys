@@ -27,7 +27,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Scheduled runs wait until the one-time setup is done. Without this, a run that fires before the
+  # "state" release exists starts from an empty database and then creates that release itself - or,
+  # if you publish yours while it is running, overwrites your track record with the empty one.
+  gate:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ready=true
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            # skip only when GitHub definitely says "no such release"; anything else (an error, a timeout) carries on
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/state")
+            if [ "$code" = "404" ]; then
+              ready=false
+              echo "::notice::There is no 'state' release yet, so scheduled runs wait. Finish the one-time setup in DEPLOY.md, then run this workflow once by hand."
+            fi
+          fi
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+
   refresh:
+    needs: gate
+    if: ${{ needs.gate.outputs.ready == 'true' }}
     runs-on: ubuntu-24.04 # pinned: "latest" jumps to a new OS image on GitHub's timetable, not ours
     timeout-minutes: 45
     environment:
