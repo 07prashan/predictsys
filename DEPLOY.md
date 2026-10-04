@@ -27,7 +27,7 @@ The live address is `https://<your-github-username>.github.io/predictsys/`.
 3. **Push the code:**
    ```bash
    git remote add origin https://github.com/<you>/predictsys.git
-   git push -u origin master
+   git push -u origin main
    ```
 4. **Turn on Pages:** the repository's Settings -> Pages -> Build and deployment -> Source:
    **GitHub Actions**.
