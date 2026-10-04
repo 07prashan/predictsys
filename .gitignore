@@ -8,3 +8,5 @@ server/.env
 server/public/data/
 # Vercel's link to the deployed project
 .vercel/
+# per-session lock file of the local scheduler tooling - machine state, not source
+.claude/scheduled_tasks.lock

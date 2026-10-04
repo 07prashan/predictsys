@@ -6,8 +6,8 @@
 #
 # The website is plain static files, so this container is only ONE way to host it
 # (it keeps the pipeline and the site together on one box). The free-hosting route
-# in DEPLOY.md runs the pipeline in GitHub Actions and puts the static files on
-# Vercel instead - same code, no always-on machine.
+# in DEPLOY.md runs the pipeline in GitHub Actions and publishes the static files
+# to GitHub Pages instead - same code, no always-on machine.
 
 FROM node:20-slim
 
