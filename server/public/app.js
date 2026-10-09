@@ -8,16 +8,17 @@ const DAYS_AHEAD = 14;
 // Minutes after kickoff at which a match counts as over and is dropped from the page for
 // good. The server filters coarsely (a few hours) in UTC; this applies the real per-sport
 // cutoff against the viewer's own clock, and keeps applying it while the page stays open.
-const FINISHED_AFTER_MIN = { football: 150, tennis: 360 };
+const FINISHED_AFTER_MIN = { football: 150, tennis: 360, basketball: 180 };
 
 const CATEGORIES = [
   { id: "all", label: "All sports" },
   { id: "leagues", label: "Football · Leagues" },
   { id: "intl", label: "Football · National teams" },
+  { id: "nba", label: "Basketball · NBA" },
   { id: "atp", label: "Tennis · ATP" },
   { id: "wta", label: "Tennis · WTA" },
 ];
-const CATEGORY_ORDER = { leagues: 0, intl: 1, atp: 2, wta: 3 };
+const CATEGORY_ORDER = { leagues: 0, intl: 1, nba: 2, atp: 3, wta: 4 };
 
 // ---- Data: static JSON files written by predict.py (src/site_export.py) ----
 
@@ -59,6 +60,7 @@ function renderUpdated() {
 
 function categoryOf(m) {
   if (m.sport === "tennis") return m.league === "WTA" ? "wta" : "atp";
+  if (m.sport === "basketball") return "nba";
   return m.league === "INT" ? "intl" : "leagues";
 }
 
@@ -113,13 +115,18 @@ function isTennis(m) {
   return m.sport === "tennis";
 }
 
+function isBasketball(m) {
+  return m.sport === "basketball";
+}
+
 function outcomeText(m, code) {
-  if (isTennis(m)) return code === "H" ? m.home_team : m.away_team;
+  // tennis and basketball have no draw, so a side is named rather than "Home"/"Away"
+  if (isTennis(m) || isBasketball(m)) return code === "H" ? m.home_team : m.away_team;
   return OUTCOME_LABEL[code];
 }
 
 function probBar(row) {
-  if (isTennis(row)) {
+  if (isTennis(row) || isBasketball(row)) {
     return `
       <div class="prob-bar" title="${esc(row.home_team)} ${pct(row.prob_home)} / ${esc(row.away_team)} ${pct(row.prob_away)}">
         <span class="h" style="width:${row.prob_home * 100}%"></span>
@@ -291,6 +298,7 @@ function tipText(m) {
 // backs neither (a draw, or a goals market).
 function pickedSide(m) {
   if (isTennis(m)) return m.predicted_outcome;
+  if (isBasketball(m)) return m.best_pick_market === "Moneyline" ? m.predicted_outcome : null;
   if (m.best_pick_market !== "Result") return null;
   return m.best_pick_label.startsWith("Home") ? "H" : m.best_pick_label.startsWith("Away") ? "A" : null;
 }
@@ -689,7 +697,7 @@ async function loadScoreboard() {
 }
 
 function historyLeagueCell(r) {
-  return isTennis(r) || r.league === "INT" ? r.competition : r.league;
+  return isTennis(r) || isBasketball(r) || r.league === "INT" ? r.competition : r.league;
 }
 
 async function loadHistory() {
@@ -776,6 +784,21 @@ function tennisMarkets(m) {
   `;
 }
 
+function basketballMarkets(m) {
+  const line = m.total_line;
+  const over = m.over_prob;
+  const margin = m.predicted_spread;
+  return `
+    ${marketChip(`${m.home_team} to win`, pct(m.prob_home))}
+    ${marketChip(`${m.away_team} to win`, pct(m.prob_away))}
+    ${marketChip("Predicted Score", `${m.correct_score_home}-${m.correct_score_away}`)}
+    ${line != null ? marketChip(`Total Over/Under ${line}`, over >= 0.5 ? `Over (${pct(over)})` : `Under (${pct(1 - over)})`) : ""}
+    ${margin != null ? marketChip("Predicted Margin", `${margin > 0 ? m.home_team : m.away_team} by ${Math.abs(margin)}`) : ""}
+    ${m.predicted_total != null ? marketChip("Predicted Total", m.predicted_total) : ""}
+    ${m.home_rating != null ? marketChip("Elo Rating", `${m.home_rating} / ${m.away_rating}`) : ""}
+  `;
+}
+
 function formComparison(m) {
   if (!m.home_form && !m.away_form) return "";
   const rating = (r) => (r ? ` <span class="rating">${r}</span>` : "");
@@ -831,7 +854,7 @@ async function renderMatchDetail(m) {
     ${formComparison(m)}
 
     <p class="section-title">All markets</p>
-    <div class="detail-market-grid">${tennis ? tennisMarkets(m) : footballMarkets(m)}</div>
+    <div class="detail-market-grid">${tennis ? tennisMarkets(m) : isBasketball(m) ? basketballMarkets(m) : footballMarkets(m)}</div>
 
     <p class="section-title">Head-to-head</p>
     <div id="h2h-slot" class="loading">Loading head-to-head history...</div>
@@ -887,7 +910,7 @@ async function renderTeamProfile(teamName, league) {
     }
     const tennis = t.sport === "tennis";
     const rankLabel = tennis ? "of active players by rating" : "of " + t.league_size + " by rating";
-    const lastStat = tennis
+    const lastStat = tennis || t.sport === "basketball"
       ? `<div class="stat"><div class="num">${t.recent_win_rate !== null ? pct(t.recent_win_rate) : "-"}</div><div class="lbl">Wins (last 10)</div></div>`
       : `<div class="stat"><div class="num">${t.recent_form_ppg !== null ? t.recent_form_ppg.toFixed(2) : "-"}</div><div class="lbl">Pts/game (last 10)</div></div>`;
     content.innerHTML = `

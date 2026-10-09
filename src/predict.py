@@ -1,5 +1,6 @@
 """Predict upcoming matches across everything this site covers - club football in 17
-European divisions, national-team football, and ATP/WTA tennis - log those predictions,
+European divisions, national-team football, ATP/WTA tennis, and NBA basketball (preseason
+included) - log those predictions,
 and settle any earlier predictions whose matches have since been played.
 
 This is the one script meant to run on a schedule - each run: refreshes the
@@ -29,6 +30,7 @@ from sklearn.linear_model import LogisticRegression
 
 import espn
 import intl
+import nba
 import site_export
 import storage
 import tennis
@@ -53,7 +55,7 @@ from team_match import match_clubs
 # this is comfortably more than that - the extra days are what a Saturday-to-Saturday
 # lookahead needs, and still near enough that the ratings behind a prediction aren't stale.
 HORIZON_DAYS = 14
-SPORTS = ("clubs", "intl", "tennis")
+SPORTS = ("clubs", "intl", "tennis", "nba")
 
 
 def build_feature_row(fixture: pd.Series, engine, tracker, elo_config: EloConfig) -> dict:
@@ -316,6 +318,21 @@ def run_tennis(conn, today: dt.date) -> pd.DataFrame:
     return tennis_settlements(out["results"])
 
 
+def run_nba(conn, today: dt.date) -> pd.DataFrame:
+    print("\n=== NBA basketball ===\n")
+    out = nba.build(today, HORIZON_DAYS)
+    if len(out["predictions"]):
+        print(
+            out["predictions"][["kickoff_utc", "competition", "home_team", "away_team", "prob_home", "predicted_outcome", "correct_score_home", "correct_score_away", "best_pick_label"]]
+            .to_string(index=False)
+        )
+    n_new = storage.save_predictions(conn, out["predictions"], predicted_at=dt.datetime.now().isoformat()) if len(out["predictions"]) else 0
+    print(f"\n{n_new} new NBA predictions saved.")
+    storage.save_matches(conn, out["matches"])
+    storage.save_team_ratings(conn, out["ratings"])
+    return out["results"]
+
+
 def main(only: list = None) -> int:
     pd.set_option("display.float_format", lambda v: f"{v:.3f}")
     pd.set_option("display.width", 250)
@@ -351,6 +368,10 @@ def main(only: list = None) -> int:
         tennis_done = attempt("tennis", lambda: run_tennis(conn, today))
         if tennis_done is not None:
             settlements.append(tennis_done)
+    if "nba" in sports:
+        nba_done = attempt("nba", lambda: run_nba(conn, today))
+        if nba_done is not None:
+            settlements.append(nba_done)
     if "clubs" in sports:
         attempt("club leagues", lambda: run_clubs(conn, soccer))
 

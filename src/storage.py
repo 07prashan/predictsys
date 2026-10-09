@@ -83,6 +83,9 @@ EXTRA_COLUMNS = (
     "home_form", "away_form", "home_rating", "away_rating",
     "surface", "best_of", "grand_slam", "straight_sets_prob", "goes_the_distance_prob", "sets_line", "sets_over_prob",
     "limited_data",
+    # basketball: the predicted scoreline's context - an over/under line and the model's
+    # total/spread, none of which football or tennis carries
+    "total_line", "over_prob", "under_prob", "predicted_total", "predicted_spread",
 )
 
 

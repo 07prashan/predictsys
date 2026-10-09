@@ -49,8 +49,10 @@ LEAGUE_NAMES = {
     "INT": "National Teams (International)",
     "ATP": "ATP Tour (Tennis)",
     "WTA": "WTA Tour (Tennis)",
+    "NBA": "NBA (Basketball)",
 }
 TENNIS_TOURS = {"ATP", "WTA"}
+BASKETBALL_LEAGUES = {"NBA"}
 
 # A match with a kickoff time is over a few hours after it starts; an older row that only has a
 # date is over once that date has passed. Deliberately generous (a long tennis match runs for
@@ -254,7 +256,7 @@ def team_profiles(conn: sqlite3.Connection, league: str, logos: Logos, next_fixt
         points = [{"W": 3, "D": 1, "L": 0}[m["outcome"]] for m in matches]
         profiles[team] = {
             "team": team,
-            "sport": "tennis" if league in TENNIS_TOURS else "football",
+            "sport": "tennis" if league in TENNIS_TOURS else "basketball" if league in BASKETBALL_LEAGUES else "football",
             "league": league,
             "league_name": LEAGUE_NAMES.get(league, league),
             "logo": logos.get(team),

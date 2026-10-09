@@ -313,3 +313,165 @@ def fetch_tennis(tour: str, days: list, workers: int = 4) -> pd.DataFrame:
     df["_final"] = (df["state"] == "post").astype(int)
     df = df.sort_values(["external_id", "_final"]).drop_duplicates("external_id", keep="last")
     return df.drop(columns="_final").sort_values("kickoff_utc").reset_index(drop=True)[TENNIS_COLUMNS]
+
+
+# ---- Basketball (NBA) --------------------------------------------------------------
+
+NBA_API = f"{SITE_API}/basketball/nba"
+NBA_COLUMNS = [
+    "external_id", "kickoff_utc", "state", "status", "season_type", "competition",
+    "home", "away", "home_logo", "away_logo", "home_points", "away_points",
+]
+
+# ESPN's season slug -> the name the site files a game under. October is the point of this
+# feed: the NBA preseason runs then, three weeks before the regular season tips off.
+NBA_COMPETITIONS = {
+    "preseason": "NBA Preseason",
+    "regular-season": "NBA",
+    "post-season": "NBA Playoffs",
+    "all-star": "NBA All-Star",
+}
+
+
+def _nba_team_logo(team: dict) -> str | None:
+    # the per-team schedule carries logos as a list, the daily scoreboard as a single
+    # "logo" string - accept either so crests show on every game
+    logos = team.get("logos") or []
+    if logos and logos[0].get("href"):
+        return logos[0]["href"]
+    return team.get("logo")
+
+
+def _parse_nba_event(event: dict) -> dict | None:
+    comp = (event.get("competitions") or [{}])[0]
+    sides = {c.get("homeAway"): c for c in comp.get("competitors", [])}
+    if "home" not in sides or "away" not in sides:
+        return None
+    status = comp.get("status", {}).get("type", {})
+    state = status.get("state", "pre")
+    season_type = (event.get("season") or {}).get("slug") or "regular-season"
+
+    def points(side):
+        # the daily scoreboard gives score as a plain string, the per-team schedule as
+        # {"value": n} - read whichever is there, and never let a shape difference raise
+        score = side.get("score")
+        raw = score.get("value") if isinstance(score, dict) else score
+        if state != "post" or raw in (None, ""):
+            return None
+        try:
+            return int(float(raw))
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "external_id": f"espn:{event['id']}",
+        "kickoff_utc": _utc(event["date"]),
+        "state": state,
+        "status": status.get("name", ""),
+        "season_type": season_type,
+        "competition": NBA_COMPETITIONS.get(season_type, "NBA"),
+        "home": sides["home"]["team"]["displayName"],
+        "away": sides["away"]["team"]["displayName"],
+        "home_logo": _nba_team_logo(sides["home"]["team"]),
+        "away_logo": _nba_team_logo(sides["away"]["team"]),
+        "home_points": points(sides["home"]),
+        "away_points": points(sides["away"]),
+    }
+
+
+def _nba_day_records(day: dt.date) -> list | None:
+    """Parsed NBA games for one day, or None if the request itself failed."""
+    data = get_json(f"{NBA_API}/scoreboard", {"dates": day.strftime("%Y%m%d"), "limit": 1000})
+    if data is None:
+        return None
+    records = []
+    for event in data.get("events", []):
+        try:
+            record = _parse_nba_event(event)
+        except (KeyError, IndexError, ValueError, TypeError, AttributeError):
+            continue
+        if record:
+            records.append(record)
+    return records
+
+
+def _cached_nba_day(day: dt.date, final_before: dt.date) -> list | None:
+    path = CACHE_DIR / "espn_nba" / f"{day:%Y%m%d}.json"
+    if day < final_before and path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+    records = _nba_day_records(day)
+    if records is not None and day < final_before:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(records, default=str), encoding="utf-8")
+    return records
+
+
+def fetch_nba(start: dt.date, end: dt.date, workers: int = 6) -> pd.DataFrame:
+    """Every NBA game from start to end inclusive, preseason through playoffs. Like the
+    football feed, ESPN's day boundaries aren't UTC's, so callers filter on kickoff_utc."""
+    days = [start + dt.timedelta(days=i) for i in range((end - start).days + 1)]
+    final_before = dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=2)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(lambda d: _cached_nba_day(d, final_before), days))
+
+    records = [r for day_records in results if day_records for r in day_records]
+    failed = sum(1 for r in results if r is None)
+    if failed:
+        print(f"  (ESPN NBA: {failed} of {len(days)} day request(s) failed)")
+    if not records:
+        return pd.DataFrame(columns=NBA_COLUMNS)
+    df = pd.DataFrame(records)
+    df["kickoff_utc"] = pd.to_datetime(df["kickoff_utc"], utc=True)
+    df = df.drop_duplicates("external_id").sort_values("kickoff_utc").reset_index(drop=True)
+    for col in ("home_points", "away_points"):
+        df[col] = df[col].astype("Int64")
+    return df[NBA_COLUMNS]
+
+
+def nba_team_ids() -> list:
+    """The 30 team ids, cached on disk - stable, but read from the feed rather than hardcoded."""
+    path = CACHE_DIR / "espn_nba" / "teams.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+    data = get_json(f"{NBA_API}/teams")
+    if data is None:
+        return []
+    teams = data.get("sports", [{}])[0].get("leagues", [{}])[0].get("teams", [])
+    ids = [int(t["team"]["id"]) for t in teams if t.get("team", {}).get("id")]
+    if ids:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(ids), encoding="utf-8")
+    return ids
+
+
+def nba_team_games(team_id: int, season: int, final: bool = False) -> list | None:
+    """One team's games for a season (82 regular-season games, plus the current season's
+    preseason so far). `final` caches the result - a completed season never changes, so it's
+    fetched once and reused; the in-progress season is always refetched."""
+    path = CACHE_DIR / "espn_nba" / "teams" / f"{season}_{team_id}.json"
+    if final and path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+    data = get_json(f"{NBA_API}/teams/{team_id}/schedule", {"season": season})
+    if data is None:
+        return None
+    records = []
+    for event in data.get("events", []):
+        try:
+            record = _parse_nba_event(event)
+        except (KeyError, IndexError, ValueError, TypeError, AttributeError):
+            continue
+        if record:
+            records.append(record)
+    if final:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(records, default=str), encoding="utf-8")
+    return records

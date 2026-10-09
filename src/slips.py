@@ -177,8 +177,17 @@ def best_leg(row, prices: dict = None, lo: float = LEG_ODDS_MIN, hi: float = LEG
     prediction for this match at a low price. Real prices win when we have them, so a
     selection the bookmaker doesn't actually offer at that price is never used."""
     real = bool(prices)
+    # The slips are a football/tennis product: their selection codes match xlite's football
+    # board. A basketball row has none of those markets, so it is simply not a slip leg.
+    sport = row.get("sport") or "football"
+    if sport == "tennis":
+        selections = [("1", "Match Winner", ""), ("2", "Match Winner", "")]
+    elif sport == "football":
+        selections = _FOOTBALL_SELECTIONS
+    else:
+        return None
     best = None
-    for code, market, label in _FOOTBALL_SELECTIONS if (row.get("sport") or "football") != "tennis" else [("1", "Match Winner", ""), ("2", "Match Winner", "")]:
+    for code, market, label in selections:
         prob = probability(row, code)
         if prob is None or prob <= 0:
             continue

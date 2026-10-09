@@ -32,6 +32,22 @@ def football_row(**overrides) -> dict:
     return row
 
 
+def basketball_row(**overrides) -> dict:
+    # basketball has no draw, and carries an over/under line and a predicted total instead
+    row = {
+        "league": "NBA", "sport": "basketball", "competition": "NBA Preseason", "round": "",
+        "match_date": "2026-10-10", "kickoff_utc": pd.Timestamp("2026-10-10T00:00:00Z"),
+        "home_team": "Dallas Mavericks", "away_team": "Houston Rockets", "external_id": "espn:999",
+        "prob_home": 0.62, "prob_draw": 0.0, "prob_away": 0.38, "predicted_outcome": "H",
+        "correct_score_home": 115, "correct_score_away": 110,
+        "best_pick_market": "Moneyline", "best_pick_label": "Home Win", "best_pick_prob": 0.62,
+        "home_logo": "dal.png", "away_logo": "hou.png", "home_form": "WWLWW", "away_form": "LLWLL",
+        "total_line": 224.5, "over_prob": 0.55, "under_prob": 0.45, "predicted_total": 224.8, "predicted_spread": 5.2,
+    }
+    row.update(overrides)
+    return row
+
+
 def tennis_row(**overrides) -> dict:
     # no goal markets at all - tennis has none, and storage must accept that
     row = {
@@ -75,6 +91,14 @@ class StorageTest(unittest.TestCase):
         self.assertEqual(tennis["correct_score_home"], 2)
         self.assertIn('"surface": "Hard"', tennis["markets_json"])
         self.assertIn('"grand_slam": 1', tennis["markets_json"])
+
+
+    def test_a_basketball_row_stores_with_its_total_markets(self):
+        self.assertEqual(self.save(basketball_row()), 1)
+        row = self.fetch("espn:999")
+        self.assertEqual((row["sport"], row["prob_draw"], row["correct_score_home"]), ("basketball", 0.0, 115))
+        self.assertIn('"total_line": 224.5', row["markets_json"])
+        self.assertIn('"predicted_total": 224.8', row["markets_json"])
 
     def test_a_row_with_no_sport_defaults_to_football(self):
         row = football_row(external_id=None)

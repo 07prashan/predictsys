@@ -42,6 +42,29 @@ def tennis_comp(round_name="Round 2", state="pre", names=("Carlos Alcaraz", "Mat
     }
 
 
+def nba_event(state="pre", status="STATUS_SCHEDULED", slug="preseason", home_score=None, away_score=None) -> dict:
+    def side(home_away, name, logo, score):
+        return {
+            "homeAway": home_away,
+            "team": {"displayName": name, "logos": [{"href": logo}]},
+            "score": None if score is None else {"value": score},
+        }
+
+    return {
+        "id": "401", "date": "2026-10-10T00:00Z", "season": {"slug": slug},
+        "competitions": [
+            {
+                "status": {"type": {"state": state, "name": status}},
+                "competitors": [
+                    side("home", "Dallas Mavericks", "dal.png", home_score),
+                    side("away", "Houston Rockets", "hou.png", away_score),
+                ],
+            }
+        ],
+    }
+
+
+
 class SoccerParseTest(unittest.TestCase):
     def test_a_tracked_league_event_is_parsed(self):
         record = espn._parse_soccer_event(soccer_event())
@@ -112,6 +135,26 @@ class TennisParseTest(unittest.TestCase):
         }
         with mock.patch.object(espn, "get_json", return_value={"events": [canceled]}):
             self.assertEqual(espn._tennis_records("WTA", None), [])
+
+
+class NbaParseTest(unittest.TestCase):
+    def test_preseason_is_named_and_has_no_score_before_tipoff(self):
+        record = espn._parse_nba_event(nba_event())
+        self.assertEqual(
+            (record["competition"], record["state"], record["home"], record["away"]),
+            ("NBA Preseason", "pre", "Dallas Mavericks", "Houston Rockets"),
+        )
+        self.assertIsNone(record["home_points"])
+        self.assertEqual(record["home_logo"], "dal.png")
+
+    def test_regular_season_and_playoffs_get_their_own_names(self):
+        self.assertEqual(espn._parse_nba_event(nba_event(slug="regular-season"))["competition"], "NBA")
+        self.assertEqual(espn._parse_nba_event(nba_event(slug="post-season"))["competition"], "NBA Playoffs")
+
+    def test_only_finished_games_carry_points(self):
+        record = espn._parse_nba_event(nba_event(state="post", status="STATUS_FINAL", home_score=112, away_score=108))
+        self.assertEqual((record["home_points"], record["away_points"]), (112, 108))
+        self.assertEqual(record["external_id"], "espn:401")
 
 
 if __name__ == "__main__":

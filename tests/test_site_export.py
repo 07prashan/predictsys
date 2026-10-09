@@ -154,6 +154,7 @@ class SiteExportTest(unittest.TestCase):
         self.assertEqual(site_export.group_of("INT"), "International")
         self.assertEqual((site_export.group_of("ATP"), site_export.group_of("WTA")), ("ATP Tour", "WTA Tour"))
         self.assertEqual(site_export.competition_of("SP1"), "La Liga")
+        self.assertEqual((site_export.group_of("NBA"), site_export.competition_of("NBA")), ("Basketball", "NBA"))
 
     def test_an_empty_database_still_produces_valid_files(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(storage, "DB_PATH", Path(tmp) / "empty.db"):
