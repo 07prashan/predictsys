@@ -11,7 +11,9 @@ the model's fair odds (1 / probability) stand in, and each leg records which was
 A "day" runs 04:00-04:00 in Kathmandu time (UTC+5:45) rather than midnight, matching how a
 betting day is usually read - Oct 9 means 4am Oct 9 to 4am Oct 10 (Kathmandu), not the
 calendar date.
-Four filters are produced from the same run time: today, and the next 2, 3 and 4 days.
+Six filters are produced from the same run time: 1, 2, 3, 4, 7 and 14 days. Each filter
+carries a headline "main slip" (every leg 1.10-1.30, total 2.00-3.50) plus up to three wider
+combination slips.
 
 The result is a plain JSON snapshot (like everything else the site shows), so the page needs
 no server and this can be regenerated without re-running any model:
@@ -45,8 +47,23 @@ SLIP_ODDS_MIN = 2.00
 SLIP_ODDS_MAX = 4.50
 MAX_LEGS = 12  # a 12-leg 1.4 acca is already 56x; a slip this long is as far as we go
 
+# The "main slip" is the one headline bet for a window: every leg is a short price
+# (1.10-1.30, so nothing riskier than a near-certainty) and the whole thing still has to
+# pay at least double without ever going past 3.5.
+MAIN_LEG_ODDS_MIN = 1.10
+MAIN_LEG_ODDS_MAX = 1.30
+MAIN_SLIP_ODDS_MIN = 2.00
+MAIN_SLIP_ODDS_MAX = 3.50
+
 # The filters the page offers: how many of the 04:00-day cycles the slip may draw from.
-FILTER_DAYS = [("today", 1, "Today"), ("days_2", 2, "2 Days"), ("days_3", 3, "3 Days"), ("days_4", 4, "4 Days")]
+FILTER_DAYS = [
+    ("day_1", 1, "1 Day"),
+    ("days_2", 2, "2 Days"),
+    ("days_3", 3, "3 Days"),
+    ("days_4", 4, "4 Days"),
+    ("days_7", 7, "7 Days"),
+    ("weeks_2", 14, "2 Weeks"),
+]
 
 # (selection code, market, label) - codes match xlite.parse_odds() exactly, so a real price
 # can be dropped in wherever the model would have used its own.
@@ -155,7 +172,7 @@ def day_start(now: dt.datetime) -> dt.datetime:
     return start.astimezone(dt.timezone.utc)
 
 
-def best_leg(row, prices: dict = None):
+def best_leg(row, prices: dict = None, lo: float = LEG_ODDS_MIN, hi: float = LEG_ODDS_MAX):
     """The model's most likely selection whose odds fall in the band - the single best
     prediction for this match at a low price. Real prices win when we have them, so a
     selection the bookmaker doesn't actually offer at that price is never used."""
@@ -171,7 +188,7 @@ def best_leg(row, prices: dict = None):
                 continue
         else:
             odds = 1.0 / prob  # the model's fair decimal price
-        if not (LEG_ODDS_MIN <= odds <= LEG_ODDS_MAX):
+        if not (lo <= odds <= hi):
             continue
         candidate = (prob, code, market, label, odds)
         if best is None or candidate[0] > best[0]:
@@ -240,19 +257,54 @@ def _product_prob(legs) -> float:
     return prob
 
 
+def build_main_slip(legs: list):
+    """The one headline bet for a window: the surest selections, every leg priced within
+    1.10-1.30, stacked until the slip pays at least 2.00 and never more than 3.50. Legs are
+    taken most-likely-first, so the finished slip is as safe as it can be for that payout."""
+    if not legs:
+        return None
+    ordered = sorted(legs, key=lambda leg: (-leg["prob"], leg["odds"], leg["kickoff_utc"]))
+    total, chosen, used = 1.0, [], set()
+    for leg in ordered:
+        if total >= MAIN_SLIP_ODDS_MIN or len(chosen) >= MAX_LEGS:
+            break
+        if leg["match_key"] in used:
+            continue
+        if total * leg["odds"] > MAIN_SLIP_ODDS_MAX:
+            continue  # would blow past the ceiling - a shorter leg later can still fit
+        total *= leg["odds"]
+        used.add(leg["match_key"])
+        chosen.append(leg)
+    if not chosen or not (MAIN_SLIP_ODDS_MIN <= total <= MAIN_SLIP_ODDS_MAX):
+        return None
+    return {
+        "kind": "main",
+        "target": MAIN_SLIP_ODDS_MIN,
+        "total_odds": round(total, 2),
+        "win_prob": round(_product_prob(chosen), 4),
+        "legs": chosen,
+    }
+
+
 def build_filter(rows, prices: dict, now: dt.datetime, day_count: int) -> dict:
-    """One filter's window, its eligible legs, and up to three slips inside 2.0-4.5."""
+    """One filter's window: its eligible legs, the headline main slip, and up to three other
+    combination slips inside 2.0-4.5."""
     start = day_start(now)
     end = start + dt.timedelta(days=day_count)
-    legs = []
+    legs, main_legs = [], []
     for row in rows:
         when = kickoff_of(row)
         if when is None or not (start <= when < end):
             continue
-        leg = best_leg(row, prices.get(match_key(row)))
+        price = prices.get(match_key(row))
+        leg = best_leg(row, price)
         if leg is not None:
             legs.append(leg)
+        main_leg = best_leg(row, price, MAIN_LEG_ODDS_MIN, MAIN_LEG_ODDS_MAX)
+        if main_leg is not None:
+            main_legs.append(main_leg)
 
+    main_slip = build_main_slip(main_legs)
     slips, seen = [], set()
     for target, strategy in _SLIP_PLAN:
         slip = build_slip(legs, target, strategy)
@@ -270,6 +322,7 @@ def build_filter(rows, prices: dict, now: dt.datetime, day_count: int) -> dict:
         "start_utc": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "end_utc": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "n_available": len(legs),
+        "main_slip": main_slip,
         "slips": slips,
     }
 
@@ -292,6 +345,8 @@ def build_slips(rows, now: dt.datetime = None, odds: dict = None) -> dict:
         "day_start_tz": DAY_TZ_NAME,
         "leg_odds_range": [LEG_ODDS_MIN, LEG_ODDS_MAX],
         "slip_odds_range": [SLIP_ODDS_MIN, SLIP_ODDS_MAX],
+        "main_leg_odds_range": [MAIN_LEG_ODDS_MIN, MAIN_LEG_ODDS_MAX],
+        "main_slip_odds_range": [MAIN_SLIP_ODDS_MIN, MAIN_SLIP_ODDS_MAX],
         "n_matches_with_real_odds": len(prices),
         "filters": filters,
     }

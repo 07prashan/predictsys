@@ -13,8 +13,9 @@ Files written (all UTF-8 JSON):
   scoreboard.json        accuracy / log-loss per league and overall
   teams/<league>.json    {team: profile}       rating, rank, recent form, next fixture
   h2h/<league>.json      {"home|away": {...}}  head-to-head for every pair the pages can show
-  slips.json             filter slips: today / 2 / 3 / 4-day accumulators built from the
-                         day's most confident low-odds selections (see slips.py)
+  slips.json             filter slips: 1 / 2 / 3 / 4 / 7 / 14-day accumulators built from
+                         the day's most confident low-odds selections, each with a headline
+                         "main slip" (legs 1.10-1.30, total 2.00-3.50) - see slips.py
 
 Team and head-to-head files are split per league so opening one profile downloads one small
 file, not every team of every sport.

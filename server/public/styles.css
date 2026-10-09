@@ -882,6 +882,24 @@ footer a { color: var(--teal); }
 
 .slip-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); }
 
+/* The headline main slip sits on its own above the grid, ringed in the brand colour. */
+.slip-main { margin-bottom: 18px; max-width: 760px; }
+.slip-card.main { border-color: var(--teal); box-shadow: 0 0 0 1px var(--teal), var(--shadow-md); }
+.slip-card.main .slip-head { background: var(--teal-soft); }
+.slip-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--teal);
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
 .slip-card {
   background: var(--surface);
   border: 1px solid var(--border);

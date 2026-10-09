@@ -1107,12 +1107,33 @@ function slipCardHtml(slip, index) {
     </article>`;
 }
 
+// The headline bet for a window: surest legs only (1.10-1.30), total 2.00-3.50.
+function slipMainCardHtml(slip) {
+  return `
+    <article class="slip-card main">
+      <div class="slip-head">
+        <div class="slip-head-text">
+          <span class="slip-name">Main slip <span class="slip-badge">Best bet</span></span>
+          <span class="slip-meta">${slip.legs.length} ${slip.legs.length === 1 ? "leg" : "legs"} &middot; win chance ${pct(slip.win_prob)}</span>
+        </div>
+        <div class="slip-total">
+          <span class="slip-total-label">Total odds</span>
+          <span class="slip-total-value">${slip.total_odds.toFixed(2)}</span>
+        </div>
+      </div>
+      <ol class="slip-legs">${slip.legs.map(slipLegHtml).join("")}</ol>
+    </article>`;
+}
+
 function renderSlipFilters(filters) {
   document.getElementById("slip-filters").innerHTML = filters
-    .map((f) => `
+    .map((f) => {
+      const n = f.slips.length + (f.main_slip ? 1 : 0);
+      return `
       <button class="chip ${f.id === slipFilter ? "active" : ""}" data-slip-filter="${esc(f.id)}" aria-pressed="${f.id === slipFilter}">
-        ${esc(f.label)} <span class="chip-count">${f.slips.length}</span>
-      </button>`)
+        ${esc(f.label)} <span class="chip-count">${n}</span>
+      </button>`;
+    })
     .join("");
 }
 
@@ -1129,18 +1150,20 @@ function renderSlips() {
   renderSlipFilters(filters);
 
   const active = filters.find((f) => f.id === slipFilter);
-  const legs = active.slips.reduce((n, slip) => n + slip.legs.length, 0);
-  const liveLegs = active.slips.reduce((n, slip) => n + slip.legs.filter((l) => l.odds_source === "1xlite").length, 0);
+  const main = active.main_slip;
+  const allSlips = [...(main ? [main] : []), ...active.slips];
+  const legs = allSlips.reduce((n, slip) => n + slip.legs.length, 0);
+  const liveLegs = allSlips.reduce((n, slip) => n + slip.legs.filter((l) => l.odds_source === "1xlite").length, 0);
   const note = legs
     ? `${liveLegs ? `${liveLegs}/${legs} legs priced live from 1xLite` : "Prices are the model's fair odds (1 / probability) - the betting app couldn't be reached"}. Day window ${formatSlipDate(active.start_utc)} to ${formatSlipDate(active.end_utc)} (Kathmandu time).`
     : `Day window ${formatSlipDate(active.start_utc)} to ${formatSlipDate(active.end_utc)} (Kathmandu time).`;
   content.innerHTML = `
-    <h2 class="day-heading">Filter slips <span class="day-total">${esc(active.label)}</span></h2>
-    <p class="view-note">The model's most confident pick per match priced 1.10&ndash;1.40, combined to total 2.00&ndash;4.50. ${esc(note)}</p>
+    <h2 class="day-heading">Prediction slips <span class="day-total">${esc(active.label)}</span></h2>
+    <p class="view-note"><b>Main slip:</b> our surest picks, every leg priced 1.10&ndash;1.30, totalling 2.00&ndash;3.50. <b>Combination slips:</b> the model's most confident pick per match priced 1.10&ndash;1.40, totalling 2.00&ndash;4.50. ${esc(note)}</p>
     ${
-      active.slips.length
-        ? `<div class="slip-grid">${active.slips.map(slipCardHtml).join("")}</div>`
-        : `<div class="empty-state">Not enough qualifying matches in this window yet to build a slip between 2.00 and 4.50 - try a wider one.</div>`
+      allSlips.length
+        ? `${main ? `<div class="slip-main">${slipMainCardHtml(main)}</div>` : ""}${active.slips.length ? `<div class="slip-grid">${active.slips.map(slipCardHtml).join("")}</div>` : ""}`
+        : `<div class="empty-state">Not enough qualifying matches in this window yet to build a slip - try a wider one.</div>`
     }
   `;
 }

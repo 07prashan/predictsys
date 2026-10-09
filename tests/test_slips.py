@@ -115,11 +115,11 @@ class WindowTest(unittest.TestCase):
 
     def test_a_match_just_before_0400_belongs_to_the_previous_cycle(self):
         rows = [football_row(kickoff_hours=-1)]  # 3:15 Kathmandu, i.e. still Oct 9's early hours
-        entry = next(f for f in slips.build_slips(rows, now=NOW)["filters"] if f["id"] == "today")
+        entry = next(f for f in slips.build_slips(rows, now=NOW)["filters"] if f["id"] == "day_1")
         self.assertEqual(entry["n_available"], 0)
 
     def test_wider_filters_see_more_of_the_fixtures(self):
-        self.assertEqual(self.slips_in("today")["n_available"], 1)
+        self.assertEqual(self.slips_in("day_1")["n_available"], 1)
         self.assertEqual(self.slips_in("days_2")["n_available"], 2)
         self.assertEqual(self.slips_in("days_4")["n_available"], 4)
 
@@ -148,13 +148,56 @@ class SlipBuildTest(unittest.TestCase):
             self.assertEqual(len(keys), len(set(keys)))
 
     def test_with_too_few_matches_no_slip_is_invented(self):
-        entry = next(f for f in slips.build_slips([football_row(0, kickoff_hours=6)], now=NOW)["filters"] if f["id"] == "today")
+        entry = next(f for f in slips.build_slips([football_row(0, kickoff_hours=6)], now=NOW)["filters"] if f["id"] == "day_1")
         self.assertEqual(entry["slips"], [])
 
     def test_an_empty_day_still_produces_valid_filters(self):
         payload = slips.build_slips([], now=NOW)
-        self.assertEqual([f["id"] for f in payload["filters"]], ["today", "days_2", "days_3", "days_4"])
-        self.assertTrue(all(f["slips"] == [] for f in payload["filters"]))
+        self.assertEqual([f["id"] for f in payload["filters"]], ["day_1", "days_2", "days_3", "days_4", "days_7", "weeks_2"])
+        self.assertTrue(all(f["slips"] == [] and f["main_slip"] is None for f in payload["filters"]))
+
+
+class MainSlipTest(unittest.TestCase):
+    def main_of(self, rows):
+        payload = slips.build_slips(rows, now=NOW)
+        return next(f for f in payload["filters"] if f["id"] == "day_1")["main_slip"]
+
+    def test_main_slip_respects_both_odds_rules(self):
+        rows = [football_row(i, kickoff_hours=6 + i) for i in range(8)]
+        main = self.main_of(rows)
+        self.assertIsNotNone(main)
+        self.assertGreaterEqual(main["total_odds"], slips.MAIN_SLIP_ODDS_MIN)
+        self.assertLessEqual(main["total_odds"], slips.MAIN_SLIP_ODDS_MAX)
+        for leg in main["legs"]:
+            self.assertGreaterEqual(leg["odds"], slips.MAIN_LEG_ODDS_MIN)
+            self.assertLessEqual(leg["odds"], slips.MAIN_LEG_ODDS_MAX)
+
+    def test_main_slip_never_reuses_a_match(self):
+        rows = [football_row(i, kickoff_hours=6 + i) for i in range(8)]
+        keys = [leg["match_key"] for leg in self.main_of(rows)["legs"]]
+        self.assertEqual(len(keys), len(set(keys)))
+
+    def test_no_main_slip_when_it_cannot_reach_double(self):
+        # a single short-priced leg can never total 2.00
+        self.assertIsNone(self.main_of([football_row(0, kickoff_hours=6)]))
+
+    def test_a_leg_priced_above_the_main_band_is_never_used(self):
+        # every main-slip leg is 1.10-1.30 even though the match also offers a wider leg
+        rows = [football_row(i, kickoff_hours=6 + i) for i in range(8)]
+        main = self.main_of(rows)
+        self.assertTrue(all(leg["odds"] <= slips.MAIN_LEG_ODDS_MAX for leg in main["legs"]))
+
+
+class FilterWindowTest(unittest.TestCase):
+    def test_filters_cover_one_to_four_days_seven_days_and_two_weeks(self):
+        payload = slips.build_slips([], now=NOW)
+        self.assertEqual([f["day_count"] for f in payload["filters"]], [1, 2, 3, 4, 7, 14])
+        self.assertEqual([f["label"] for f in payload["filters"]], ["1 Day", "2 Days", "3 Days", "4 Days", "7 Days", "2 Weeks"])
+
+    def test_the_snapshot_publishes_the_main_slip_ranges(self):
+        payload = slips.build_slips([], now=NOW)
+        self.assertEqual(payload["main_leg_odds_range"], [1.10, 1.30])
+        self.assertEqual(payload["main_slip_odds_range"], [2.00, 3.50])
 
 
 class WriteTest(unittest.TestCase):
