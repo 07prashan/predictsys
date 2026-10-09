@@ -371,7 +371,10 @@ def main(only: list = None) -> int:
 
     # the website is static files: this is what refreshes them (run even after a partial failure,
     # so whatever did succeed still reaches the site)
-    written = attempt("website data export", lambda: site_export.export_site(conn))
+    # live_odds: price the filter slips off the 1xLite betting app where a fixture resolves
+    # there, instead of the model's fair odds. Purely additive - the export falls back to
+    # model prices if that feed is unreachable.
+    written = attempt("website data export", lambda: site_export.export_site(conn, live_odds=True))
     if written:
         print(f"\nWebsite data written to {site_export.SITE_DATA_DIR}: {written}")
     conn.close()

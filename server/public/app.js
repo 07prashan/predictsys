@@ -650,7 +650,10 @@ function setUpAutoRefresh() {
     renderUpdated();
   }, 60 * 1000);
   setInterval(() => {
-    if (!document.hidden) loadUpcoming();
+    if (!document.hidden) {
+      loadUpcoming();
+      loadSlips();
+    }
   }, 5 * 60 * 1000);
 }
 
@@ -1037,6 +1040,130 @@ function setUpHeaderScroll() {
   onScroll();
 }
 
+// ---- Filter slips: low-odds accumulators for today and the next few days ----
+//
+// slips.json (src/slips.py) hands us, per window, a handful of accumulators built from the
+// day's most confident selections priced 1.10-1.40, each combining to 2.00-4.50. Nothing
+// here recomputes anything - it just presents what the pipeline already decided.
+
+let slipsData = null;
+let slipFilter = null;
+
+// Slip windows are 4am -> 4am Kathmandu time (see src/slips.py), so everything on a slip is
+// rendered in Asia/Kathmandu no matter what timezone the viewer's browser is set to - otherwise
+// the window boundary would read as 9:45pm (or worse, a different date) outside Nepal.
+const SLIP_TZ = "Asia/Kathmandu";
+
+function formatSlipKickoff(iso) {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return "";
+  const date = new Date(ms).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", timeZone: SLIP_TZ });
+  const time = new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", timeZone: SLIP_TZ });
+  return `${date} \u00b7 ${time}`;
+}
+
+// "Oct 9, 4:00 AM" - the day-cycle boundary itself, in Kathmandu time.
+function formatSlipDate(iso) {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return "";
+  return new Date(ms).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: SLIP_TZ });
+}
+
+// A slip leg stores no match key of its own, so look its fixture up by league + teams to make
+// the leg open the same detail view every other row does.
+function findMatch(league, home, away) {
+  return upcomingRows.find((m) => m.league === league && m.home_team === home && m.away_team === away);
+}
+
+function slipLegHtml(leg) {
+  const match = findMatch(leg.league, leg.home_team, leg.away_team);
+  const key = match ? matchKey(match) : "";
+  if (match) matchDataByKey.set(key, match);
+  const live = leg.odds_source === "1xlite";
+  const label = match ? `View ${leg.home_team} vs ${leg.away_team}` : `${leg.home_team} vs ${leg.away_team}`;
+  return `
+    <li class="slip-leg${match ? " clickable" : ""}" ${match ? `data-match-key="${esc(key)}" role="button" tabindex="0" aria-label="${esc(label)}"` : ""}>
+      <span class="slip-leg-when">${esc(formatSlipKickoff(leg.kickoff_utc))}</span>
+      <span class="slip-leg-match">${esc(leg.home_team)}<span class="vs">vs</span>${esc(leg.away_team)}</span>
+      <span class="slip-leg-pick">${esc(leg.label)}</span>
+      <span class="slip-leg-odds ${live ? "live" : "model"}" title="${live ? "Price from the 1xLite betting app" : "Model's fair price (1 / probability)"}">${leg.odds.toFixed(2)}</span>
+    </li>`;
+}
+
+function slipCardHtml(slip, index) {
+  return `
+    <article class="slip-card">
+      <div class="slip-head">
+        <div class="slip-head-text">
+          <span class="slip-name">Slip ${index + 1}</span>
+          <span class="slip-meta">${slip.legs.length} ${slip.legs.length === 1 ? "leg" : "legs"} &middot; win chance ${pct(slip.win_prob)}</span>
+        </div>
+        <div class="slip-total">
+          <span class="slip-total-label">Total odds</span>
+          <span class="slip-total-value">${slip.total_odds.toFixed(2)}</span>
+        </div>
+      </div>
+      <ol class="slip-legs">${slip.legs.map(slipLegHtml).join("")}</ol>
+    </article>`;
+}
+
+function renderSlipFilters(filters) {
+  document.getElementById("slip-filters").innerHTML = filters
+    .map((f) => `
+      <button class="chip ${f.id === slipFilter ? "active" : ""}" data-slip-filter="${esc(f.id)}" aria-pressed="${f.id === slipFilter}">
+        ${esc(f.label)} <span class="chip-count">${f.slips.length}</span>
+      </button>`)
+    .join("");
+}
+
+function renderSlips() {
+  const content = document.getElementById("slips-content");
+  if (!slipsData) return;
+  const filters = slipsData.filters || [];
+  if (!filters.length) {
+    document.getElementById("slip-filters").innerHTML = "";
+    content.innerHTML = `<div class="empty-state">No slips are available yet - the next scheduled refresh will build them.</div>`;
+    return;
+  }
+  if (!slipFilter || !filters.some((f) => f.id === slipFilter)) slipFilter = filters[0].id;
+  renderSlipFilters(filters);
+
+  const active = filters.find((f) => f.id === slipFilter);
+  const legs = active.slips.reduce((n, slip) => n + slip.legs.length, 0);
+  const liveLegs = active.slips.reduce((n, slip) => n + slip.legs.filter((l) => l.odds_source === "1xlite").length, 0);
+  const note = legs
+    ? `${liveLegs ? `${liveLegs}/${legs} legs priced live from 1xLite` : "Prices are the model's fair odds (1 / probability) - the betting app couldn't be reached"}. Day window ${formatSlipDate(active.start_utc)} to ${formatSlipDate(active.end_utc)} (Kathmandu time).`
+    : `Day window ${formatSlipDate(active.start_utc)} to ${formatSlipDate(active.end_utc)} (Kathmandu time).`;
+  content.innerHTML = `
+    <h2 class="day-heading">Filter slips <span class="day-total">${esc(active.label)}</span></h2>
+    <p class="view-note">The model's most confident pick per match priced 1.10&ndash;1.40, combined to total 2.00&ndash;4.50. ${esc(note)}</p>
+    ${
+      active.slips.length
+        ? `<div class="slip-grid">${active.slips.map(slipCardHtml).join("")}</div>`
+        : `<div class="empty-state">Not enough qualifying matches in this window yet to build a slip between 2.00 and 4.50 - try a wider one.</div>`
+    }
+  `;
+}
+
+async function loadSlips() {
+  const content = document.getElementById("slips-content");
+  try {
+    slipsData = await getJson("data/slips.json");
+    renderSlips();
+  } catch (err) {
+    if (!slipsData) content.innerHTML = `<div class="empty-state">Couldn't load slips: ${esc(err.message)}</div>`;
+  }
+}
+
+function setUpSlipFilters() {
+  document.getElementById("slip-filters").addEventListener("click", (e) => {
+    const chip = e.target.closest("[data-slip-filter]");
+    if (!chip || chip.dataset.slipFilter === slipFilter) return;
+    slipFilter = chip.dataset.slipFilter;
+    renderSlips();
+  });
+}
+
 setUpTabs();
 setUpModal();
 setUpDelegatedClicks();
@@ -1044,7 +1171,9 @@ setUpHeaderScroll();
 setUpViewToggle();
 setUpFilters();
 setUpCountryDateSelects();
+setUpSlipFilters();
 setUpAutoRefresh();
 loadUpcoming();
+loadSlips();
 loadScoreboard();
 loadHistory();

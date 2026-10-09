@@ -875,3 +875,66 @@ footer a { color: var(--teal); }
 
 .legend .updated { margin-left: auto; font-variant-numeric: tabular-nums; }
 .legend .updated.stale { color: var(--incorrect); font-weight: 700; }
+
+/* ---- Filter slips ---- */
+
+.slip-rules { font-size: 0.8rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+.slip-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); }
+
+.slip-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition: box-shadow 0.15s ease;
+}
+.slip-card:hover { box-shadow: var(--shadow-md); }
+
+.slip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-alt);
+}
+.slip-head-text { display: flex; flex-direction: column; }
+.slip-name { font-weight: 700; }
+.slip-meta { font-size: 0.78rem; color: var(--text-muted); }
+.slip-total { display: flex; flex-direction: column; align-items: flex-end; }
+.slip-total-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+.slip-total-value { font-size: 1.5rem; font-weight: 800; color: var(--teal); font-variant-numeric: tabular-nums; line-height: 1.1; }
+
+.slip-legs { list-style: none; margin: 0; padding: 0; }
+.slip-leg {
+  display: grid;
+  grid-template-columns: 92px 1fr auto;
+  grid-template-areas: "when match odds" "when pick odds";
+  align-items: center;
+  gap: 2px 12px;
+  padding: 11px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 0.86rem;
+}
+.slip-legs .slip-leg:first-child { border-top: none; }
+.slip-leg.clickable { cursor: pointer; }
+.slip-leg.clickable:hover { background: var(--surface-alt); }
+
+.slip-leg-when { grid-area: when; font-size: 0.74rem; color: var(--text-muted); line-height: 1.25; }
+.slip-leg-match { grid-area: match; font-weight: 600; display: flex; align-items: center; gap: 6px; min-width: 0; }
+.slip-leg-match .vs { font-size: 0.7rem; color: var(--text-muted); font-weight: 400; text-transform: uppercase; }
+.slip-leg-pick { grid-area: pick; font-size: 0.78rem; color: var(--teal); font-weight: 600; }
+.slip-leg-odds {
+  grid-area: odds;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: var(--teal-soft);
+  color: var(--teal);
+  white-space: nowrap;
+}
+.slip-leg-odds.model { background: var(--surface-alt); color: var(--text-muted); }

@@ -13,6 +13,8 @@ Files written (all UTF-8 JSON):
   scoreboard.json        accuracy / log-loss per league and overall
   teams/<league>.json    {team: profile}       rating, rank, recent form, next fixture
   h2h/<league>.json      {"home|away": {...}}  head-to-head for every pair the pages can show
+  slips.json             filter slips: today / 2 / 3 / 4-day accumulators built from the
+                         day's most confident low-odds selections (see slips.py)
 
 Team and head-to-head files are split per league so opening one profile downloads one small
 file, not every team of every sport.
@@ -29,6 +31,7 @@ import re
 import sqlite3
 from pathlib import Path
 
+import slips
 import storage
 from fetch_data import LEAGUES
 
@@ -286,9 +289,32 @@ def h2h(conn: sqlite3.Connection, league: str, home: str, away: str) -> dict:
     return {"summary": summary, "total": len(meetings), "meetings": shown}
 
 
-def export_site(conn: sqlite3.Connection, out_dir: Path = SITE_DATA_DIR, now: dt.datetime = None) -> dict:
+def filter_slips(upcoming_rows: list, now: dt.datetime, live_odds: bool = False) -> dict:
+    """The filter slips snapshot (slips.py). Real 1xLite prices are only fetched when asked
+    for - the offline export (and its tests) must never depend on a third-party feed."""
+    odds = {}
+    # only the fixtures inside the widest slip window can ever appear on a slip, so the
+    # (rate-limited) betting feed is asked about those and nothing else
+    window_end = slips.day_start(now) + dt.timedelta(days=max(day_count for _id, day_count, _label in slips.FILTER_DAYS))
+    in_window = [row for row in upcoming_rows if (slips.kickoff_of(row) or now) < window_end]
+    if live_odds and in_window:
+        try:
+            import xlite
+
+            odds = xlite.odds_for_rows(in_window)
+        except Exception as exc:  # noqa: BLE001 - a betting feed being down must not sink the export
+            print(f"  (live odds unavailable - slips use model prices: {exc})")
+    return slips.build_slips(upcoming_rows, now=now, odds=odds)
+
+
+def export_site(
+    conn: sqlite3.Connection, out_dir: Path = SITE_DATA_DIR, now: dt.datetime = None, live_odds: bool = False
+) -> dict:
     """Write every file the site needs. Per-league shards go first and the files the page
-    loads on arrival go last, so a reader never sees new predictions with stale shards."""
+    loads on arrival go last, so a reader never sees new predictions with stale shards.
+
+    live_odds pulls current 1xLite prices for the slips - opt-in, so the export stays pure
+    and offline by default (predict.py's scheduled run turns it on)."""
     now = now or dt.datetime.now(dt.timezone.utc)
     logos = Logos(conn)
     upcoming_rows = upcoming(conn, logos, now)
@@ -316,10 +342,17 @@ def export_site(conn: sqlite3.Connection, out_dir: Path = SITE_DATA_DIR, now: dt
             _write_json(out_dir / "h2h" / f"{league}.json", {f"{h}|{a}": h2h(conn, league, h, a) for h, a in sorted(pairs)})
             n_pairs += len(pairs)
 
+    slip_payload = filter_slips(upcoming_rows, now, live_odds)
+    slips.write_slips(slip_payload, out_dir / "slips.json")
+
     _write_json(out_dir / "scoreboard.json", scoreboard(conn))
     _write_json(out_dir / "history.json", history_rows)
     _write_json(out_dir / "predictions.json", {"generated_at": _iso(now), "rows": upcoming_rows})
-    return {"upcoming": len(upcoming_rows), "history": len(history_rows), "teams": n_teams, "h2h_pairs": n_pairs}
+    n_slips = sum(len(f["slips"]) for f in slip_payload["filters"])
+    return {
+        "upcoming": len(upcoming_rows), "history": len(history_rows), "teams": n_teams,
+        "h2h_pairs": n_pairs, "slips": n_slips,
+    }
 
 
 if __name__ == "__main__":
