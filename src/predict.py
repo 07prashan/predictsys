@@ -52,7 +52,7 @@ from team_match import match_clubs
 # How far ahead matches are predicted and shown. The site promises a full week of days, so
 # this is comfortably more than that - the extra days are what a Saturday-to-Saturday
 # lookahead needs, and still near enough that the ratings behind a prediction aren't stale.
-HORIZON_DAYS = 10
+HORIZON_DAYS = 14
 SPORTS = ("clubs", "intl", "tennis")
 
 

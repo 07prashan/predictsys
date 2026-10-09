@@ -2,8 +2,8 @@ const OUTCOME_LABEL = { H: "Home", D: "Draw", A: "Away" };
 const matchDataByKey = new Map();
 
 // How many days (today included) the day strip and "this week" scaffold cover. The pipeline
-// predicts ten days ahead (predict.py's HORIZON_DAYS) - the two should move together.
-const DAYS_AHEAD = 10;
+// predicts fourteen days ahead (predict.py's HORIZON_DAYS) - the two should move together.
+const DAYS_AHEAD = 14;
 
 // Minutes after kickoff at which a match counts as over and is dropped from the page for
 // good. The server filters coarsely (a few hours) in UTC; this applies the real per-sport
