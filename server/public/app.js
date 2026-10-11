@@ -1113,12 +1113,12 @@ function slipLegHtml(leg) {
     </li>`;
 }
 
-function slipCardHtml(slip, index) {
+function slipCardHtml(slip, index, name) {
   return `
     <article class="slip-card">
       <div class="slip-head">
         <div class="slip-head-text">
-          <span class="slip-name">Slip ${index + 1}</span>
+          <span class="slip-name">${name || `Slip ${index + 1}`}</span>
           <span class="slip-meta">${slip.legs.length} ${slip.legs.length === 1 ? "leg" : "legs"} &middot; win chance ${pct(slip.win_prob)}</span>
         </div>
         <div class="slip-total">
@@ -1127,16 +1127,17 @@ function slipCardHtml(slip, index) {
         </div>
       </div>
       <ol class="slip-legs">${slip.legs.map(slipLegHtml).join("")}</ol>
+      ${slipActionsHtml(slip, index)}
     </article>`;
 }
 
 // The headline bet for a window: surest legs only (1.10-1.30), total 2.00-3.50.
-function slipMainCardHtml(slip) {
+function slipMainCardHtml(slip, index, name) {
   return `
     <article class="slip-card main">
       <div class="slip-head">
         <div class="slip-head-text">
-          <span class="slip-name">Main slip <span class="slip-badge">Best bet</span></span>
+          <span class="slip-name">${name || `Main slip <span class="slip-badge">Best bet</span>`}</span>
           <span class="slip-meta">${slip.legs.length} ${slip.legs.length === 1 ? "leg" : "legs"} &middot; win chance ${pct(slip.win_prob)}</span>
         </div>
         <div class="slip-total">
@@ -1145,7 +1146,289 @@ function slipMainCardHtml(slip) {
         </div>
       </div>
       <ol class="slip-legs">${slip.legs.map(slipLegHtml).join("")}</ol>
+      ${slipActionsHtml(slip, index)}
     </article>`;
+}
+
+// ---- Bet codes: every slip gets a copyable code that can be saved and loaded again ----
+//
+// A code (PSB1-...) carries the whole slip - matches, picks, prices - so a saved slip still
+// loads after the page's data has been rebuilt underneath it. One honest limit: the 1xBet
+// app only accepts codes minted inside itself, so "Copy for 1xBet" copies the picks as text
+// to add by hand instead of pretending the code would import there.
+
+const BET_CODE_PREFIX = "PSB1-";
+const SAVED_SLIPS_KEY = "predictsys.saved_slips";
+let renderedSlips = [];
+let loadedSlip = null;
+
+function decodeBetCode(text) {
+  const code = (text || "").trim();
+  if (!code.startsWith(BET_CODE_PREFIX)) throw new Error(`Not a PredictSys bet code - codes start with ${BET_CODE_PREFIX}`);
+  const body = code.slice(BET_CODE_PREFIX.length);
+  let payload;
+  try {
+    const b64 = body.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+    const bytes = Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
+    payload = JSON.parse(new TextDecoder().decode(bytes));
+  } catch (err) {
+    throw new Error("That bet code is damaged - copy it again in full.");
+  }
+  if (!payload || payload.v !== 1 || !Array.isArray(payload.l)) {
+    throw new Error("That bet code was made by a different version of the site.");
+  }
+  const legs = payload.l.map((p) => {
+    const parts = String(p.m || "").split("|");
+    return {
+      match_key: p.m,
+      league: parts[0] || "",
+      home_team: parts[1] || "?",
+      away_team: parts.slice(2).join("|") || "?",
+      kickoff_utc: p.k,
+      label: p.l || "",
+      odds: Number(p.o) || 0,
+      odds_source: p.x ? "1xlite" : "model",
+    };
+  });
+  if (!legs.length) throw new Error("That bet code has no legs in it.");
+  const product = legs.reduce((total, leg) => total * leg.odds, 1);
+  return {
+    window: payload.w || "",
+    kind: payload.k === "main" ? "main" : "combo",
+    total_odds: Number(payload.t) || product,
+    win_prob: Number(payload.p) || 0,
+    legs,
+  };
+}
+
+// navigator.clipboard only exists in a secure context (https or localhost); the textarea
+// fallback keeps copy working when the page is served over plain http elsewhere.
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (err) {
+      // clipboard permission denied - try the legacy path below
+    }
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch (err) {
+    ok = false;
+  }
+  area.remove();
+  return ok;
+}
+
+function flashButton(btn, label) {
+  if (!btn.dataset.originalLabel) btn.dataset.originalLabel = btn.textContent;
+  btn.textContent = label;
+  btn.classList.add("done");
+  clearTimeout(btn._flashTimer);
+  btn._flashTimer = setTimeout(() => {
+    btn.textContent = btn.dataset.originalLabel;
+    btn.classList.remove("done");
+  }, 1600);
+}
+
+// The picks as plain text, one line per leg - this is what actually gets a slip into a
+// real betting app, since 1xBet will not import a code made anywhere but inside 1xBet.
+function slipPlainText(slip) {
+  const name = slip.kind === "main" ? "Main slip" : "Accumulator";
+  const lines = slip.legs.map((leg, i) => {
+    const when = formatSlipKickoff(leg.kickoff_utc);
+    return `${i + 1}. ${leg.home_team} vs ${leg.away_team} - ${leg.label} @ ${leg.odds.toFixed(2)}${when ? ` (${when})` : ""}`;
+  });
+  return [
+    `PredictSys slip - ${name}${slip.window ? ` (${slip.window})` : ""}`,
+    `${slip.legs.length} legs - total odds ${slip.total_odds.toFixed(2)} - win chance ${pct(slip.win_prob)}`,
+    "Times are Kathmandu (UTC+5:45). Add every line below as one accumulator.",
+    "",
+    ...lines,
+  ].join("\n");
+}
+
+function slipActionsHtml(slip, index) {
+  const id = slip.code ? `${slip.code.slice(0, 12)}\u2026` : "";
+  return `
+      <div class="slip-actions">
+        <button class="slip-action" data-slip-action="copy-code" data-slip-idx="${index}" title="Copy this slip's bet code">Copy code</button>
+        <button class="slip-action" data-slip-action="save" data-slip-idx="${index}" title="Keep this slip on this device">Save slip</button>
+        <button class="slip-action" data-slip-action="copy-text" data-slip-idx="${index}" title="Copy the picks as text to add in your betting app">Copy for 1xBet</button>
+        ${id ? `<code class="slip-code-id">${esc(id)}</code>` : ""}
+      </div>`;
+}
+
+function readSavedSlips() {
+  try {
+    const list = JSON.parse(localStorage.getItem(SAVED_SLIPS_KEY) || "[]");
+    return Array.isArray(list) ? list : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function writeSavedSlips(list) {
+  try {
+    localStorage.setItem(SAVED_SLIPS_KEY, JSON.stringify(list.slice(0, 30)));
+  } catch (err) {
+    // storage blocked or full - the slips just do not persist
+  }
+}
+
+function saveSlip(slip) {
+  if (!slip.code) return;
+  const entry = {
+    code: slip.code,
+    window: slip.window || "",
+    kind: slip.kind === "main" ? "main" : "combo",
+    total_odds: slip.total_odds,
+    legs: slip.legs.length,
+    saved_at: new Date().toISOString(),
+  };
+  writeSavedSlips([entry, ...readSavedSlips().filter((s) => s.code !== entry.code)]);
+  renderSavedSlips();
+}
+
+function renderSavedSlips() {
+  const box = document.getElementById("saved-slips");
+  const list = readSavedSlips();
+  if (!list.length) {
+    box.innerHTML = "";
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  box.innerHTML = `
+    <h3 class="saved-slips-title">Saved slips <span class="saved-slips-count">${list.length}</span></h3>
+    <p class="saved-slips-note">Kept on this device - reload one even after the slips have been rebuilt.</p>
+    <ul class="saved-slips">
+      ${list
+        .map(
+          (s, i) => `
+        <li class="saved-slip">
+          <span class="saved-slip-name">${s.kind === "main" ? "Main slip" : "Accumulator"} <span class="saved-slip-meta">${esc(s.window || "")} &middot; ${s.legs} legs &middot; total ${Number(s.total_odds).toFixed(2)}</span></span>
+          <span class="saved-slip-actions">
+            <button class="slip-action" data-saved-action="load" data-saved-idx="${i}">Load</button>
+            <button class="slip-action" data-saved-action="copy" data-saved-idx="${i}">Copy code</button>
+            <button class="slip-action danger" data-saved-action="remove" data-saved-idx="${i}" aria-label="Delete this saved slip">&times;</button>
+          </span>
+        </li>`
+        )
+        .join("")}
+    </ul>`;
+}
+
+// Keep every slip whose actions can be clicked in one list, so a data-slip-idx on any
+// button - loaded slip included - resolves back to the slip it belongs to.
+function registerSlips(baseList) {
+  renderedSlips = loadedSlip ? [...baseList, loadedSlip] : [...baseList];
+  renderLoadedSlip();
+}
+
+function showBetCode(text) {
+  loadedSlip = decodeBetCode(text);
+  loadedSlip.code = String(text).trim();
+  if (!renderedSlips.includes(loadedSlip)) renderedSlips.push(loadedSlip);
+  renderLoadedSlip();
+}
+
+function renderLoadedSlip() {
+  const box = document.getElementById("slip-load-result");
+  if (!loadedSlip) {
+    box.innerHTML = "";
+    return;
+  }
+  const idx = renderedSlips.indexOf(loadedSlip);
+  const name = loadedSlip.kind === "main" ? `Main slip <span class="slip-badge">Loaded</span>` : "Loaded slip";
+  const card = loadedSlip.kind === "main" ? slipMainCardHtml(loadedSlip, idx, name) : slipCardHtml(loadedSlip, idx, name);
+  box.innerHTML = `
+    <div class="loaded-slip">
+      <div class="loaded-slip-head">
+        <span class="loaded-slip-title">Loaded from code <code class="slip-code-id">${esc(loadedSlip.code.slice(0, 12))}\u2026</code></span>
+        <button class="slip-action" id="loaded-slip-close">Close</button>
+      </div>
+      ${card}
+    </div>`;
+  const close = box.querySelector("#loaded-slip-close");
+  if (close) {
+    close.addEventListener("click", () => {
+      const closing = loadedSlip;
+      loadedSlip = null;
+      registerSlips(renderedSlips.filter((s) => s !== closing));
+    });
+  }
+}
+
+function setBetCodeError(message) {
+  const box = document.getElementById("betcode-error");
+  box.textContent = message || "";
+  box.hidden = !message;
+}
+
+function setUpBetCodes() {
+  document.getElementById("slips").addEventListener("click", async (e) => {
+    const actionBtn = e.target.closest("[data-slip-action]");
+    if (actionBtn) {
+      const slip = renderedSlips[Number(actionBtn.dataset.slipIdx)];
+      if (!slip) return;
+      if (actionBtn.dataset.slipAction === "copy-code") {
+        flashButton(actionBtn, (await copyText(slip.code || "")) ? "Copied \u2713" : "Copy failed");
+      } else if (actionBtn.dataset.slipAction === "copy-text") {
+        flashButton(actionBtn, (await copyText(slipPlainText(slip))) ? "Copied \u2713" : "Copy failed");
+      } else if (actionBtn.dataset.slipAction === "save") {
+        saveSlip(slip);
+        flashButton(actionBtn, "Saved \u2713");
+      }
+      return;
+    }
+    const savedBtn = e.target.closest("[data-saved-action]");
+    if (!savedBtn) return;
+    const idx = Number(savedBtn.dataset.savedIdx);
+    const list = readSavedSlips();
+    const entry = list[idx];
+    if (!entry) return;
+    if (savedBtn.dataset.savedAction === "copy") {
+      flashButton(savedBtn, (await copyText(entry.code)) ? "Copied \u2713" : "Copy failed");
+    } else if (savedBtn.dataset.savedAction === "load") {
+      try {
+        showBetCode(entry.code);
+        setBetCodeError("");
+      } catch (err) {
+        setBetCodeError(err.message);
+      }
+    } else if (savedBtn.dataset.savedAction === "remove") {
+      writeSavedSlips(list.filter((_, i) => i !== idx));
+      renderSavedSlips();
+    }
+  });
+
+  const input = document.getElementById("betcode-input");
+  const load = () => {
+    if (!input.value.trim()) return;
+    try {
+      showBetCode(input.value);
+      setBetCodeError("");
+      document.getElementById("slip-load-result").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } catch (err) {
+      setBetCodeError(err.message);
+    }
+  };
+  document.getElementById("betcode-load").addEventListener("click", load);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") load();
+  });
+  renderSavedSlips();
 }
 
 function renderSlipFilters(filters) {
@@ -1175,6 +1458,7 @@ function renderSlips() {
   const active = filters.find((f) => f.id === slipFilter);
   const main = active.main_slip;
   const allSlips = [...(main ? [main] : []), ...active.slips];
+  registerSlips(allSlips);
   const legs = allSlips.reduce((n, slip) => n + slip.legs.length, 0);
   const liveLegs = allSlips.reduce((n, slip) => n + slip.legs.filter((l) => l.odds_source === "1xlite").length, 0);
   const note = legs
@@ -1182,10 +1466,10 @@ function renderSlips() {
     : `Day window ${formatSlipDate(active.start_utc)} to ${formatSlipDate(active.end_utc)} (Kathmandu time).`;
   content.innerHTML = `
     <h2 class="day-heading">Prediction slips <span class="day-total">${esc(active.label)}</span></h2>
-    <p class="view-note"><b>Main slip:</b> our surest picks, every leg priced 1.10&ndash;1.30, totalling 2.00&ndash;3.50. <b>Combination slips:</b> the model's most confident pick per match priced 1.10&ndash;1.40, totalling 2.00&ndash;4.50. ${esc(note)}</p>
+    <p class="view-note"><b>Main slip:</b> our surest picks, every leg priced 1.10&ndash;1.30, totalling 2.00&ndash;3.50. <b>Combination slips:</b> the model's most confident pick per match priced 1.10&ndash;1.40, totalling 2.00&ndash;4.50. Every slip has a bet code - copy it, save the slip, or paste a code back in below. ${esc(note)}</p>
     ${
       allSlips.length
-        ? `${main ? `<div class="slip-main">${slipMainCardHtml(main)}</div>` : ""}${active.slips.length ? `<div class="slip-grid">${active.slips.map(slipCardHtml).join("")}</div>` : ""}`
+        ? `${main ? `<div class="slip-main">${slipMainCardHtml(main, 0)}</div>` : ""}${active.slips.length ? `<div class="slip-grid">${active.slips.map((s, i) => slipCardHtml(s, i + (main ? 1 : 0))).join("")}</div>` : ""}`
         : `<div class="empty-state">Not enough qualifying matches in this window yet to build a slip - try a wider one.</div>`
     }
   `;
@@ -1218,6 +1502,7 @@ setUpViewToggle();
 setUpFilters();
 setUpCountryDateSelects();
 setUpSlipFilters();
+setUpBetCodes();
 setUpAutoRefresh();
 loadUpcoming();
 loadSlips();

@@ -15,12 +15,18 @@ Six filters are produced from the same run time: 1, 2, 3, 4, 7 and 14 days. Each
 carries a headline "main slip" (every leg 1.10-1.30, total 2.00-3.50) plus up to three wider
 combination slips.
 
+Every finished slip also carries a "bet code" - the slip itself packed into one copyable
+string (PSB1-<base64url>), in the spirit of a bookmaker's slip code. 1xBet only accepts codes
+minted inside its own app, so this code is ours: share it, save it, or paste it back into the
+Prediction Slip tab to reload the exact selections even after the data has been rebuilt.
+
 The result is a plain JSON snapshot (like everything else the site shows), so the page needs
 no server and this can be regenerated without re-running any model:
 
     python src/slips.py
 """
 
+import base64
 import datetime as dt
 import json
 import os
@@ -295,6 +301,62 @@ def build_main_slip(legs: list):
     }
 
 
+# ---- Bet codes ------------------------------------------------------------
+# A slip is useless once you've closed the tab, so every slip also gets a code: the whole
+# slip packed into one copyable string. It carries the matches, picks and prices itself,
+# so a saved slip still loads after the page's data has been rebuilt underneath it.
+CODE_PREFIX = "PSB1-"
+
+
+def encode_slip_code(slip: dict, window_label: str, kind: str) -> str:
+    legs = []
+    for leg in slip["legs"]:
+        packed = {"m": leg["match_key"], "k": leg["kickoff_utc"], "l": leg["label"], "o": leg["odds"]}
+        if leg.get("odds_source") == "1xlite":
+            packed["x"] = 1  # only flag live prices; the model's fair odds are the default
+        legs.append(packed)
+    payload = {"v": 1, "w": window_label, "k": kind, "t": slip["total_odds"], "p": slip["win_prob"], "l": legs}
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return CODE_PREFIX + base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def decode_slip_code(code: str) -> dict:
+    """The inverse of encode_slip_code - what the page runs when a code is pasted back in.
+    Raises ValueError with a readable message for anything that is not an intact code."""
+    text = str(code or "").strip()
+    if not text.startswith(CODE_PREFIX):
+        raise ValueError(f"that is not a PredictSys bet code (they start with {CODE_PREFIX})")
+    body = text[len(CODE_PREFIX):]
+    try:
+        raw = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
+        payload = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:  # base64 and json both raise ValueError
+        raise ValueError("the bet code is damaged - copy it again in full") from exc
+    if not isinstance(payload, dict) or payload.get("v") != 1 or not isinstance(payload.get("l"), list):
+        raise ValueError("this bet code was made by a different version of the site")
+    legs = []
+    for packed in payload["l"]:
+        whole = str(packed.get("m") or "")
+        league, home, away = (whole.split("|", 2) + ["", "", ""])[:3]
+        legs.append({
+            "match_key": whole,
+            "league": league or None,
+            "home_team": home or "?",
+            "away_team": away or "?",
+            "kickoff_utc": packed.get("k"),
+            "label": packed.get("l"),
+            "odds": _num(packed.get("o")) or 0.0,
+            "odds_source": "1xlite" if packed.get("x") else "model",
+        })
+    return {
+        "window": payload.get("w"),
+        "kind": payload.get("k") or "combo",
+        "total_odds": _num(payload.get("t")) or 0.0,
+        "win_prob": _num(payload.get("p")) or 0.0,
+        "legs": legs,
+    }
+
+
 def build_filter(rows, prices: dict, now: dt.datetime, day_count: int) -> dict:
     """One filter's window: its eligible legs, the headline main slip, and up to three other
     combination slips inside 2.0-4.5."""
@@ -347,11 +409,16 @@ def build_slips(rows, now: dt.datetime = None, odds: dict = None) -> dict:
         entry["id"] = filter_id
         entry["label"] = label
         entry["day_count"] = day_count
+        if entry["main_slip"] is not None:
+            entry["main_slip"]["code"] = encode_slip_code(entry["main_slip"], label, "main")
+        for slip in entry["slips"]:
+            slip["code"] = encode_slip_code(slip, label, "combo")
         filters.append(entry)
     return {
         "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "day_start_hour": DAY_START_HOUR,
         "day_start_tz": DAY_TZ_NAME,
+        "code_prefix": CODE_PREFIX,
         "leg_odds_range": [LEG_ODDS_MIN, LEG_ODDS_MAX],
         "slip_odds_range": [SLIP_ODDS_MIN, SLIP_ODDS_MAX],
         "main_leg_odds_range": [MAIN_LEG_ODDS_MIN, MAIN_LEG_ODDS_MAX],

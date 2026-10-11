@@ -956,3 +956,76 @@ footer a { color: var(--teal); }
   white-space: nowrap;
 }
 .slip-leg-odds.model { background: var(--surface-alt); color: var(--text-muted); }
+
+/* ---- Bet codes: copy a slip's code, save it, load it back, or copy the picks ---- */
+.betcode-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 2px 0 14px; }
+.betcode-load { display: flex; gap: 8px; align-items: center; }
+.betcode-load input {
+  font: inherit;
+  font-size: 0.84rem;
+  width: min(360px, 72vw);
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+}
+.betcode-load input:focus { outline: none; border-color: var(--teal); }
+.betcode-load .chip { padding: 7px 14px; }
+.betcode-note { font-size: 0.78rem; color: var(--text-muted); max-width: 66ch; }
+.betcode-error { color: var(--incorrect); font-size: 0.8rem; margin: -8px 0 12px; }
+
+.slip-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-alt);
+}
+.slip-action {
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 600;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+.slip-action:hover { color: var(--text); border-color: color-mix(in srgb, var(--teal) 45%, var(--border)); }
+.slip-action.done { background: var(--teal); border-color: var(--teal); color: #fff; }
+.slip-action.danger:hover { color: var(--incorrect); border-color: var(--incorrect); }
+.slip-code-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-left: auto;
+  user-select: all;
+}
+
+.loaded-slip { margin-bottom: 18px; max-width: 760px; }
+.loaded-slip-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.loaded-slip-title { font-size: 0.8rem; font-weight: 600; color: var(--text-muted); display: inline-flex; align-items: center; gap: 6px; }
+
+.saved-slips-title { font-size: 0.95rem; margin: 20px 0 2px; }
+.saved-slips-count { color: var(--teal); font-variant-numeric: tabular-nums; }
+.saved-slips-note { font-size: 0.76rem; color: var(--text-muted); margin: 0 0 8px; }
+.saved-slips { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.saved-slip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.saved-slip-name { font-size: 0.85rem; font-weight: 600; }
+.saved-slip-meta { font-size: 0.76rem; color: var(--text-muted); font-weight: 400; }
+.saved-slip-actions { display: flex; gap: 6px; align-items: center; }

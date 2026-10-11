@@ -188,6 +188,74 @@ class MainSlipTest(unittest.TestCase):
         self.assertTrue(all(leg["odds"] <= slips.MAIN_LEG_ODDS_MAX for leg in main["legs"]))
 
 
+class BetCodeTest(unittest.TestCase):
+    """Every slip carries a PSB1- code that packs the whole slip, so it can be copied,
+    saved and pasted back in later - even after the data behind the page changed."""
+
+    def build(self, rows=None):
+        rows = rows if rows is not None else [football_row(i, kickoff_hours=6 + i) for i in range(12)]
+        return slips.build_slips(rows, now=NOW)
+
+    def test_every_slip_carries_a_code(self):
+        for f in self.build()["filters"]:
+            if f["main_slip"]:
+                self.assertTrue(f["main_slip"]["code"].startswith(slips.CODE_PREFIX))
+            for slip in f["slips"]:
+                self.assertTrue(slip["code"].startswith(slips.CODE_PREFIX))
+
+    def test_a_code_decodes_back_to_the_same_slip(self):
+        f = next(x for x in self.build()["filters"] if x["id"] == "days_2")
+        slip = f["slips"][0]
+        decoded = slips.decode_slip_code(slip["code"])
+        self.assertEqual(decoded["window"], "2 Days")
+        self.assertEqual(decoded["kind"], "combo")
+        self.assertEqual(decoded["total_odds"], slip["total_odds"])
+        self.assertEqual(len(decoded["legs"]), len(slip["legs"]))
+        for got, want in zip(decoded["legs"], slip["legs"]):
+            self.assertEqual(got["match_key"], want["match_key"])
+            self.assertEqual(got["label"], want["label"])
+            self.assertEqual(got["odds"], want["odds"])
+            self.assertEqual(got["odds_source"], want["odds_source"])
+            self.assertEqual(got["kickoff_utc"], want["kickoff_utc"])
+
+    def test_a_main_slip_code_keeps_its_window_kind_and_rules(self):
+        rows = [football_row(i, kickoff_hours=6 + i) for i in range(8)]
+        main = next(f for f in self.build(rows)["filters"] if f["id"] == "day_1")["main_slip"]
+        decoded = slips.decode_slip_code(main["code"])
+        self.assertEqual(decoded["kind"], "main")
+        self.assertEqual(decoded["window"], "1 Day")
+        self.assertTrue(decoded["legs"])
+        self.assertTrue(all(1.10 <= leg["odds"] <= 1.30 for leg in decoded["legs"]))
+        self.assertTrue(2.00 <= decoded["total_odds"] <= 3.50)
+
+    def test_a_live_priced_leg_keeps_its_marker_through_the_code(self):
+        rows = [football_row(i, kickoff_hours=6 + i) for i in range(12)]
+        odds = {slips.match_key(rows[0]): {"O1.5": "1.15"}}  # the bookmaker offers this one
+        live = slips.best_leg(rows[0], odds[slips.match_key(rows[0])])
+        model = slips.best_leg(rows[1])
+        slip = {"total_odds": round(live["odds"] * model["odds"], 2), "win_prob": 0.5, "legs": [live, model]}
+        decoded = slips.decode_slip_code(slips.encode_slip_code(slip, "2 Days", "combo"))
+        self.assertEqual(decoded["legs"][0]["odds_source"], "1xlite")
+        self.assertEqual(decoded["legs"][1]["odds_source"], "model")
+        self.assertEqual(decoded["legs"][0]["odds"], live["odds"])
+        self.assertEqual(decoded["legs"][0]["match_key"], live["match_key"])
+
+    def test_unicode_team_names_survive_the_round_trip(self):
+        rows = [football_row(i, kickoff_hours=6 + i) for i in range(12)]
+        rows[0]["home_team"] = "Atl\u00e9tico Madrid"
+        slip = next(f for f in self.build(rows)["filters"] if f["id"] == "days_4")["slips"][0]
+        decoded = slips.decode_slip_code(slip["code"])
+        self.assertTrue(any("Atl\u00e9tico" in leg["home_team"] for leg in decoded["legs"]))
+
+    def test_a_damaged_or_foreign_code_is_rejected(self):
+        for bad in ("", "hello", "PSB1-%%%%", "PSB1-" + "A" * 40):
+            with self.assertRaises(ValueError, msg=bad):
+                slips.decode_slip_code(bad)
+
+    def test_the_snapshot_advertises_the_code_prefix(self):
+        self.assertEqual(self.build()["code_prefix"], "PSB1-")
+
+
 class FilterWindowTest(unittest.TestCase):
     def test_filters_cover_one_to_four_days_seven_days_and_two_weeks(self):
         payload = slips.build_slips([], now=NOW)

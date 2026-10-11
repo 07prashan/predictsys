@@ -136,6 +136,16 @@
         <div class="chip-row" id="slip-filters" role="group" aria-label="Slip window"></div>
         <span class="slip-rules">Main slip: legs 1.10&ndash;1.30, total 2.00&ndash;3.50 &middot; Combination slips: legs 1.10&ndash;1.40, total 2.00&ndash;4.50</span>
       </div>
+      <div class="betcode-bar">
+        <div class="betcode-load">
+          <label class="sr-only" for="betcode-input">Bet code</label>
+          <input id="betcode-input" type="text" placeholder="Paste a bet code (PSB1-&#8230;)" autocomplete="off" spellcheck="false">
+          <button id="betcode-load" class="chip">Load code</button>
+        </div>
+        <span class="betcode-note">Every slip has its own bet code - copy it from a slip, save the slip, or paste a code here to load it back. <b>Copy for 1xBet</b> copies the picks as text, because the 1xBet app only loads codes created inside itself.</span>
+      </div>
+      <p class="betcode-error" id="betcode-error" role="alert" hidden></p>
+      <div id="slip-load-result" aria-live="polite"></div>
       <div id="slips-content" aria-live="polite">
         <div class="match-list" aria-hidden="true">
           <div class="skeleton-row">
@@ -151,6 +161,7 @@
         </div>
         <span class="sr-only">Loading slips…</span>
       </div>
+      <div id="saved-slips"></div>
     </section>
 
     <section id="track-record" class="tab-panel" role="tabpanel" aria-labelledby="tab-track-record" tabindex="0">
