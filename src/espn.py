@@ -1,5 +1,6 @@
-"""Fixtures AND results for national-team football, the 17 club leagues, and ATP/WTA
-tennis, from ESPN's public scoreboard feed.
+"""Fixtures AND results for national-team football, 23 domestic leagues (Europe plus the
+top flights of South/North America and Asia), the continental club competitions, and
+ATP/WTA tennis, from ESPN's public scoreboard feed.
 
 football-data.co.uk (fetch_fixtures.py) only publishes the NEXT round of club fixtures,
 and nothing at all while the leagues are paused for an international window - so a
@@ -63,7 +64,31 @@ CLUB_LEAGUES = {
     710: "F1", 3926: "F2",
     715: "P1", 725: "N1", 3955: "G1", 3946: "T1", 3901: "B1",
     735: "SC0", 3940: "SC1",
+    # top flights outside Europe (football-data's "new format" leagues - see fetch_data)
+    630: "BRA", 745: "ARG", 760: "MEX", 770: "USA", 750: "JPN", 8376: "CHN",
 }
+
+# Continental club competitions: ESPN league id -> (our league code, ESPN scoreboard slug,
+# display name with the confederation it groups under on the site). The clubs in these come
+# from every domestic league at once - and from leagues we don't model at all (Saudi Arabia,
+# Qatar, ...) - so they can't be priced by any one league's model; continental.py rates them
+# on one global scale instead. The slug is what fetch_league_history() needs to backfill a
+# whole season of one competition in a single request (the daily feed only ever has one day).
+CONTINENTAL_COMPETITIONS = {
+    775: ("UCL", "uefa.champions", "UEFA Champions League (UEFA)"),
+    776: ("UEL", "uefa.europa", "UEFA Europa League (UEFA)"),
+    20296: ("UECL", "uefa.europa.conf", "UEFA Conference League (UEFA)"),
+    783: ("LIB", "conmebol.libertadores", "CONMEBOL Libertadores (CONMEBOL)"),
+    5454: ("SUD", "conmebol.sudamericana", "CONMEBOL Sudamericana (CONMEBOL)"),
+    5699: ("CCC", "concacaf.champions", "Concacaf Champions Cup (Concacaf)"),
+    2391: ("CAFCL", "caf.champions", "CAF Champions League (CAF)"),
+    18000: ("CAFCC", "caf.confed", "CAF Confederation Cup (CAF)"),
+    3902: ("ACLE", "afc.champions", "AFC Champions League Elite (AFC)"),
+    2466: ("ACL2", "afc.cup", "AFC Champions League Two (AFC)"),
+    5501: ("CWC", "fifa.cwc", "FIFA Club World Cup (FIFA)"),
+}
+CONTINENTAL_LEAGUE_NAMES = {code: name for code, _slug, name in CONTINENTAL_COMPETITIONS.values()}
+CONTINENTAL_SLUGS = {code: slug for code, slug, _name in CONTINENTAL_COMPETITIONS.values()}
 
 SOCCER_COLUMNS = [
     "external_id", "kickoff_utc", "league_id", "kind", "league_code", "competition", "state", "status",
@@ -110,6 +135,8 @@ def _parse_soccer_event(event: dict) -> dict | None:
     league_id = int(match.group(1)) if match else None
     if league_id in INTERNATIONAL_COMPETITIONS:
         kind, league_code, competition = "intl", "INT", INTERNATIONAL_COMPETITIONS[league_id]
+    elif league_id in CONTINENTAL_COMPETITIONS:
+        kind, league_code, competition = "continental", CONTINENTAL_COMPETITIONS[league_id][0], None
     elif league_id in CLUB_LEAGUES:
         kind, league_code, competition = "club", CLUB_LEAGUES[league_id], None
     else:
@@ -177,6 +204,55 @@ def _cached_soccer_day(day: dt.date, final_before: dt.date) -> list | None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(records, default=str), encoding="utf-8")
     return records
+
+
+def _league_year_records(slug: str, year: int) -> list | None:
+    """Every event of one competition in a calendar year, parsed - or None if the request
+    failed. ESPN's scoreboard takes a year ('2025') or a month ('202509') as `dates`, which
+    is what makes history backfill cheap: one request per competition-year instead of one
+    per day. (It does NOT accept a day range - that answers 400.)"""
+    data = get_json(f"{SITE_API}/soccer/{slug}/scoreboard", {"dates": str(year), "limit": 1000})
+    if data is None:
+        return None
+    records = []
+    for event in data.get("events", []):
+        try:
+            record = _parse_soccer_event(event)
+        except (KeyError, IndexError, ValueError, TypeError):
+            continue
+        if record:
+            records.append(record)
+    return records
+
+
+def fetch_league_history(code: str, slug: str, year: int, final: bool = None) -> pd.DataFrame:
+    """One competition's whole calendar year as a soccer frame (same columns as
+    fetch_soccer). Past years are final and cached on disk after one fetch; the current
+    year is always refetched - it's still gaining results.
+
+    An unreachable feed returns an empty frame rather than raising: history that can't be
+    refreshed still leaves the current-year predictions to run off whatever is cached."""
+    if final is None:
+        final = year < dt.datetime.now(dt.timezone.utc).year
+    path = CACHE_DIR / "espn_history" / f"{code}_{year}.json"
+    if final and path.exists():
+        try:
+            records = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            records = None
+    else:
+        records = _league_year_records(slug, year)
+        if records is not None and final:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(records, default=str), encoding="utf-8")
+    if not records:
+        return pd.DataFrame(columns=SOCCER_COLUMNS)
+    df = pd.DataFrame(records)
+    df["kickoff_utc"] = pd.to_datetime(df["kickoff_utc"], utc=True)
+    df = df.drop_duplicates("external_id").sort_values("kickoff_utc").reset_index(drop=True)
+    for col in ("home_goals", "away_goals"):
+        df[col] = df[col].astype("Int64")
+    return df[SOCCER_COLUMNS]
 
 
 def fetch_soccer(start: dt.date, end: dt.date, workers: int = 6) -> pd.DataFrame:

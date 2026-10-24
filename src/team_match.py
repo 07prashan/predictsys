@@ -39,6 +39,37 @@ CLUB_ALIASES = {
     "Heart of Midlothian": "Hearts",
     "Raith Rovers": "Raith Rvs",
     "Sporting Gijón": "Sp Gijon",
+    # World leagues (ESPN -> football-data's spelling). Token matching gets most of these
+    # right on its own; these are the ones verified by comparing both sources' actual name
+    # sets for 2024-2026 - every other name in those leagues already resolved verbatim.
+    "Argentinos Juniors": "Argentinos Jrs",
+    "Estudiantes de La Plata": "Estudiantes L.P.",  # not plain 'Estudiantes' - that's a different club
+    "Gimnasia La Plata": "Gimnasia L.P.",
+    "Independiente Rivadavia": "Ind. Rivadavia",  # not 'Independiente' - Mendoza, not Avellaneda
+    "San Martín (San Juan)": "San Martin S.J.",
+    "Santos": "Santos Laguna",
+    "Atlanta United FC": "Atlanta Utd",
+    "D.C. United": "DC United",
+    "Inter Miami CF": "Inter Miami",
+    "LA Galaxy": "Los Angeles Galaxy",
+    "LAFC": "Los Angeles FC",
+    "Tokyo Verdy 1969": "Verdy",
+    "América": "Club America",
+    "São Paulo": "Sao Paulo",
+    "Talleres (Córdoba)": "Talleres Cordoba",
+    "Belgrano (Córdoba)": "Belgrano",
+    "Central Córdoba (Santiago del Estero)": "Central Cordoba",
+    "Unión (Santa Fe)": "Union de Santa Fe",
+    "Godoy Cruz Antonio Tomba": "Godoy Cruz",
+    # Big European clubs whose ESPN name out-tokenizes the football-data one ('Inter Milan'
+    # also covers 'AC Milan', so token matching can't choose between them).
+    "FC Porto": "Porto",
+    "Internazionale": "Inter",
+    "Inter Milan": "Inter",
+    "NEC Nijmegen": "Nijmegen",
+    "Vitória de Guimaraes": "Guimaraes",
+    "Shanghai Port FC": "Shanghai Port",
+    "West Ham United": "West Ham",
 }
 
 # Tokens that say what KIND of club it is rather than which one: 'FC Porto' and 'Porto',

@@ -4,9 +4,12 @@ Uses small hand-built events in ESPN's shape - offline.
 Run from the project root:  python -m unittest discover -s tests -t .
 """
 
+import datetime as dt
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import espn  # noqa: E402
@@ -77,6 +80,22 @@ class SoccerParseTest(unittest.TestCase):
         record = espn._parse_soccer_event(soccer_event(league_id=700))
         self.assertEqual((record["kind"], record["league_code"]), ("club", "E0"))
 
+    def test_world_leagues_map_to_their_own_codes(self):
+        self.assertEqual(espn._parse_soccer_event(soccer_event(league_id=630))["league_code"], "BRA")
+        self.assertEqual(espn._parse_soccer_event(soccer_event(league_id=745))["league_code"], "ARG")
+        self.assertEqual(espn._parse_soccer_event(soccer_event(league_id=770))["league_code"], "USA")
+
+    def test_continental_competitions_get_their_own_kind(self):
+        # UCL/UEL/Conference League/Libertadores/ACL Elite/... - the clubs come from every
+        # league at once, so these are priced by the global model, not any league's
+        self.assertEqual(
+            espn._parse_soccer_event(soccer_event(league_id=775))["kind"], "continental"
+        )
+        record = espn._parse_soccer_event(soccer_event(league_id=3902))
+        self.assertEqual((record["kind"], record["league_code"]), ("continental", "ACLE"))
+        record = espn._parse_soccer_event(soccer_event(league_id=783, state="post", status="STATUS_FULL_TIME"))
+        self.assertEqual((record["league_code"], record["home_goals"]), ("LIB", 2))
+
     def test_only_finished_matches_carry_a_score(self):
         record = espn._parse_soccer_event(soccer_event(state="post", status="STATUS_FULL_TIME"))
         self.assertEqual((record["home_goals"], record["away_goals"]), (2, 1))
@@ -84,6 +103,54 @@ class SoccerParseTest(unittest.TestCase):
     def test_untracked_leagues_are_ignored(self):
         self.assertIsNone(espn._parse_soccer_event(soccer_event(league_id=12345)))  # e.g. a college or youth competition
         self.assertIsNone(espn._parse_soccer_event({**soccer_event(), "uid": "no-league-id-here"}))
+
+
+class LeagueHistoryTest(unittest.TestCase):
+    """The competition-year fetch that backfills continental history - one request per
+    competition-year, cached on disk so a scheduled run never refetches a finished season."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(espn, "CACHE_DIR", Path(tmp.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_year_of_one_competition_comes_back_parsed(self):
+        events = {"events": [
+            soccer_event(state="post", status="STATUS_FULL_TIME", league_id=775, home_score="3", away_score="0"),
+            {**soccer_event(league_id=775), "id": "402", "uid": "s:600~l:775~e:402"},
+        ]}
+        with mock.patch.object(espn, "get_json", return_value=events) as fetch:
+            df = espn.fetch_league_history("UCL", "uefa.champions", 2025, final=True)
+        fetch.assert_called_once()
+        self.assertEqual((fetch.call_args[0][0]).split("/")[-2:], ["uefa.champions", "scoreboard"])
+        self.assertEqual(len(df), 2)
+        self.assertEqual(set(df["league_code"]), {"UCL"})
+        self.assertEqual(df.iloc[0]["home_goals"], 3)
+        self.assertTrue(df["kickoff_utc"].dt.tz)  # still tz-aware UTC, like every other feed
+
+    def test_a_finished_year_is_never_refetched(self):
+        events = {"events": [soccer_event(state="post", status="STATUS_FULL_TIME", league_id=775)]}
+        with mock.patch.object(espn, "get_json", return_value=events) as fetch:
+            espn.fetch_league_history("UCL", "uefa.champions", 2025, final=True)
+            again = espn.fetch_league_history("UCL", "uefa.champions", 2025, final=True)
+        self.assertEqual(fetch.call_count, 1)  # the second call was answered from disk
+        self.assertEqual(len(again), 1)
+
+    def test_the_current_year_is_always_refetched(self):
+        events = {"events": [soccer_event(state="post", status="STATUS_FULL_TIME", league_id=775)]}
+        this_year = dt.datetime.now(dt.timezone.utc).year
+        with mock.patch.object(espn, "get_json", return_value=events) as fetch:
+            espn.fetch_league_history("UCL", "uefa.champions", this_year, final=False)
+            espn.fetch_league_history("UCL", "uefa.champions", this_year, final=False)
+        self.assertEqual(fetch.call_count, 2)  # an in-progress season gains results weekly
+
+    def test_an_unreachable_feed_costs_an_empty_frame_not_the_run(self):
+        with mock.patch.object(espn, "get_json", return_value=None):
+            df = espn.fetch_league_history("UCL", "uefa.champions", 2025, final=True)
+        self.assertTrue(df.empty)
+        self.assertEqual(list(df.columns), espn.SOCCER_COLUMNS)
 
 
 class TennisParseTest(unittest.TestCase):

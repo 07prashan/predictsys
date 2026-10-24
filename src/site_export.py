@@ -8,7 +8,8 @@ database and the models stay wherever predict.py runs (a laptop, or a scheduled 
 and only these snapshots are deployed.
 
 Files written (all UTF-8 JSON):
-  predictions.json       {generated_at, rows}  upcoming matches, with the page's finished-match cutoff
+  predictions.json       {generated_at, league_order, rows}  upcoming matches, with the page's
+                         finished-match cutoff and the popularity order competitions are listed in
   history.json           recently graded predictions
   scoreboard.json        accuracy / log-loss per league and overall
   teams/<league>.json    {team: profile}       rating, rank, recent form, next fixture
@@ -34,7 +35,8 @@ from pathlib import Path
 
 import slips
 import storage
-from fetch_data import LEAGUES
+from espn import CONTINENTAL_LEAGUE_NAMES
+from fetch_data import ALL_LEAGUES
 
 ROOT = Path(__file__).resolve().parent.parent
 SITE_DATA_DIR = ROOT / "server" / "public" / "data"
@@ -44,8 +46,11 @@ LEGACY_LOGOS = ROOT / "server" / "logo_cache.json"
 
 # Not leagues but "competition groups": national-team football and the two tennis tours,
 # each holding many differently-named competitions/tournaments (stored per prediction).
+# Everything else is one league or one continental competition per code, whose full name
+# (with the country/confederation it groups under on the page) comes from the catalogs.
 LEAGUE_NAMES = {
-    **LEAGUES,
+    **ALL_LEAGUES,  # European top flights + second divisions, and the world leagues
+    **CONTINENTAL_LEAGUE_NAMES,  # UCL / UEL / UECL / Libertadores / ACL Elite / ...
     "INT": "National Teams (International)",
     "ATP": "ATP Tour (Tennis)",
     "WTA": "WTA Tour (Tennis)",
@@ -53,6 +58,57 @@ LEAGUE_NAMES = {
 }
 TENNIS_TOURS = {"ATP", "WTA"}
 BASKETBALL_LEAGUES = {"NBA"}
+
+# Most-followed first. Every list of leagues on the site - the "By Competition" view and the
+# track record - reads this order, so the competition a visitor came for (the Premier League,
+# the Champions League) is never buried under one they have never heard of. Codes not named
+# here sort after all of these, alphabetically, so a league added later still shows up.
+LEAGUE_POPULARITY = [
+    "E0",  # Premier League - the most-watched league in the world
+    "UCL",  # Champions League
+    "SP1",  # La Liga
+    "I1",  # Serie A
+    "D1",  # Bundesliga
+    "F1",  # Ligue 1
+    "UEL",  # Europa League
+    "INT",  # national-team football
+    "LIB",  # Copa Libertadores
+    "BRA",  # Brasileirao
+    "ARG",  # Argentine Primera Division
+    "UECL",  # Conference League
+    "MEX",  # Liga MX
+    "USA",  # MLS
+    "P1",  # Primeira Liga
+    "N1",  # Eredivisie
+    "T1",  # Super Lig
+    "B1",  # Belgian Pro League
+    "E1",  # Championship
+    "SC0",  # Scottish Premiership
+    "G1",  # Greek Super League
+    "SUD",  # Copa Sudamericana
+    "CCC",  # Concacaf Champions Cup
+    "ACLE",  # AFC Champions League Elite
+    "ACL2",  # AFC Champions League Two
+    "CAFCL",  # CAF Champions League
+    "JPN",  # J1 League
+    "CHN",  # Chinese Super League
+    "CWC",  # FIFA Club World Cup
+    "CAFCC",  # CAF Confederation Cup
+    "SP2",  # second divisions, after every top flight
+    "D2",
+    "I2",
+    "F2",
+    "SC1",
+    "NBA",
+    "ATP",
+    "WTA",
+]
+LEAGUE_RANK = {code: i for i, code in enumerate(LEAGUE_POPULARITY)}
+
+
+def league_rank(code: str) -> int:
+    """Where a league sits in the popularity order - unknown codes go after every known one."""
+    return LEAGUE_RANK.get(code, len(LEAGUE_POPULARITY))
 
 # A match with a kickoff time is over a few hours after it starts; an older row that only has a
 # date is over once that date has passed. Deliberately generous (a long tennis match runs for
@@ -214,6 +270,7 @@ def scoreboard(conn: sqlite3.Connection) -> list:
         {"league": league, "league_name": LEAGUE_NAMES.get(league, league), **summarize(group)}
         for league, group in by_league.items()
     ]
+    result.sort(key=lambda entry: (league_rank(entry["league"]), entry["league"]))
     result.append({"league": "ALL", "league_name": "All leagues", **summarize(rows)})
     return result
 
@@ -350,7 +407,7 @@ def export_site(
 
     _write_json(out_dir / "scoreboard.json", scoreboard(conn))
     _write_json(out_dir / "history.json", history_rows)
-    _write_json(out_dir / "predictions.json", {"generated_at": _iso(now), "rows": upcoming_rows})
+    _write_json(out_dir / "predictions.json", {"generated_at": _iso(now), "league_order": LEAGUE_POPULARITY, "rows": upcoming_rows})
     n_slips = sum(len(f["slips"]) for f in slip_payload["filters"])
     return {
         "upcoming": len(upcoming_rows), "history": len(history_rows), "teams": n_teams,

@@ -999,17 +999,29 @@ footer a { color: var(--teal); }
 .slip-action:hover { color: var(--text); border-color: color-mix(in srgb, var(--teal) 45%, var(--border)); }
 .slip-action.done { background: var(--teal); border-color: var(--teal); color: #fff; }
 .slip-action.danger:hover { color: var(--incorrect); border-color: var(--incorrect); }
-.slip-code-id {
+/* The five-character code a slip is opened by, sitting in its action bar */
+.slip-code-now {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-right: 4px;
+  padding: 4px 10px 4px 8px;
+  border: 1px dashed color-mix(in srgb, var(--teal) 45%, var(--border));
+  border-radius: 10px;
+  background: var(--surface);
+}
+.slip-code-label { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-muted); }
+.slip-code-value {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.72rem;
-  color: var(--text-muted);
-  margin-left: auto;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--teal);
   user-select: all;
 }
-
-.loaded-slip { margin-bottom: 18px; max-width: 760px; }
-.loaded-slip-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
-.loaded-slip-title { font-size: 0.8rem; font-weight: 600; color: var(--text-muted); display: inline-flex; align-items: center; gap: 6px; }
+.slip-code-value.small { font-size: 0.82rem; letter-spacing: 0.06em; }
+.slip-card.loaded { border-color: color-mix(in srgb, var(--teal) 55%, var(--border)); }
+.slip-card.loaded .slip-head { background: var(--teal-soft); }
 
 .saved-slips-title { font-size: 0.95rem; margin: 20px 0 2px; }
 .saved-slips-count { color: var(--teal); font-variant-numeric: tabular-nums; }

@@ -189,24 +189,24 @@ class MainSlipTest(unittest.TestCase):
 
 
 class BetCodeTest(unittest.TestCase):
-    """Every slip carries a PSB1- code that packs the whole slip, so it can be copied,
-    saved and pasted back in later - even after the data behind the page changed."""
+    """Every slip carries a PSB1- payload that packs the whole slip, so a saved slip can be
+    reloaded later - even after the data behind the page changed."""
 
     def build(self, rows=None):
         rows = rows if rows is not None else [football_row(i, kickoff_hours=6 + i) for i in range(12)]
         return slips.build_slips(rows, now=NOW)
 
-    def test_every_slip_carries_a_code(self):
+    def test_every_slip_carries_a_payload(self):
         for f in self.build()["filters"]:
             if f["main_slip"]:
-                self.assertTrue(f["main_slip"]["code"].startswith(slips.CODE_PREFIX))
+                self.assertTrue(f["main_slip"]["code_payload"].startswith(slips.CODE_PREFIX))
             for slip in f["slips"]:
-                self.assertTrue(slip["code"].startswith(slips.CODE_PREFIX))
+                self.assertTrue(slip["code_payload"].startswith(slips.CODE_PREFIX))
 
     def test_a_code_decodes_back_to_the_same_slip(self):
         f = next(x for x in self.build()["filters"] if x["id"] == "days_2")
         slip = f["slips"][0]
-        decoded = slips.decode_slip_code(slip["code"])
+        decoded = slips.decode_slip_code(slip["code_payload"])
         self.assertEqual(decoded["window"], "2 Days")
         self.assertEqual(decoded["kind"], "combo")
         self.assertEqual(decoded["total_odds"], slip["total_odds"])
@@ -221,7 +221,7 @@ class BetCodeTest(unittest.TestCase):
     def test_a_main_slip_code_keeps_its_window_kind_and_rules(self):
         rows = [football_row(i, kickoff_hours=6 + i) for i in range(8)]
         main = next(f for f in self.build(rows)["filters"] if f["id"] == "day_1")["main_slip"]
-        decoded = slips.decode_slip_code(main["code"])
+        decoded = slips.decode_slip_code(main["code_payload"])
         self.assertEqual(decoded["kind"], "main")
         self.assertEqual(decoded["window"], "1 Day")
         self.assertTrue(decoded["legs"])
@@ -244,7 +244,7 @@ class BetCodeTest(unittest.TestCase):
         rows = [football_row(i, kickoff_hours=6 + i) for i in range(12)]
         rows[0]["home_team"] = "Atl\u00e9tico Madrid"
         slip = next(f for f in self.build(rows)["filters"] if f["id"] == "days_4")["slips"][0]
-        decoded = slips.decode_slip_code(slip["code"])
+        decoded = slips.decode_slip_code(slip["code_payload"])
         self.assertTrue(any("Atl\u00e9tico" in leg["home_team"] for leg in decoded["legs"]))
 
     def test_a_damaged_or_foreign_code_is_rejected(self):
@@ -253,7 +253,53 @@ class BetCodeTest(unittest.TestCase):
                 slips.decode_slip_code(bad)
 
     def test_the_snapshot_advertises_the_code_prefix(self):
-        self.assertEqual(self.build()["code_prefix"], "PSB1-")
+        payload = self.build()
+        self.assertEqual(payload["code_prefix"], "PSB1-")
+        self.assertEqual(payload["code_length"], 5)
+        self.assertEqual((payload["code_alphabet"], len(payload["code_alphabet"])), (slips.CODE_ALPHABET, 32))
+
+
+class ShortCodeTest(unittest.TestCase):
+    """The five-character code a visitor reads out or types back in: unique per slip, stable
+    for the same slip, and free of the characters people mix up (0/O, 1/I)."""
+
+    def build(self, rows=None):
+        rows = rows if rows is not None else [football_row(i, kickoff_hours=6 + i) for i in range(12)]
+        return slips.build_slips(rows, now=NOW)
+
+    @staticmethod
+    def every_slip(payload):
+        for f in payload["filters"]:
+            if f["main_slip"]:
+                yield f["label"], f["main_slip"]
+            for slip in f["slips"]:
+                yield f["label"], slip
+
+    def test_every_slip_gets_five_letters_or_digits(self):
+        slips_out = list(self.every_slip(self.build()))
+        self.assertTrue(slips_out)
+        for _label, slip in slips_out:
+            self.assertRegex(slip["code"], r"^[2-9A-HJ-NP-Z]{5}$")
+
+    def test_two_slips_never_share_a_code(self):
+        codes = [slip["code"] for _label, slip in self.every_slip(self.build())]
+        self.assertEqual(len(codes), len(set(codes)))
+
+    def test_the_same_slip_always_mints_the_same_code(self):
+        rows = [football_row(i, kickoff_hours=6 + i) for i in range(12)]
+        first = {(label, tuple(l["match_key"] for l in s["legs"])): s["code"] for label, s in self.every_slip(self.build(rows))}
+        second = {(label, tuple(l["match_key"] for l in s["legs"])): s["code"] for label, s in self.every_slip(self.build(rows))}
+        self.assertEqual(first, second)
+
+    def test_a_different_slip_gets_a_different_code(self):
+        rows = [football_row(i, kickoff_hours=6 + i) for i in range(12)]
+        one = next(f for f in self.build(rows)["filters"] if f["id"] == "day_1")["slips"][0]
+        two = next(f for f in self.build(rows)["filters"] if f["id"] == "days_2")["slips"][0]
+        self.assertNotEqual(one["code"], two["code"])
+
+    def test_the_code_avoids_lookalike_characters(self):
+        for char in "01OI":
+            self.assertNotIn(char, slips.CODE_ALPHABET)
 
 
 class FilterWindowTest(unittest.TestCase):
@@ -266,6 +312,111 @@ class FilterWindowTest(unittest.TestCase):
         payload = slips.build_slips([], now=NOW)
         self.assertEqual(payload["main_leg_odds_range"], [1.10, 1.30])
         self.assertEqual(payload["main_slip_odds_range"], [2.00, 3.50])
+
+
+class ConsistencyTest(unittest.TestCase):
+    """Among legs the model likes about equally, the slip prefers the side that has been
+    winning its last five - the top flight's consistently performing clubs."""
+
+    @staticmethod
+    def backing(i, form, prob_home=0.85, **overrides):
+        """A row whose best in-band selection is the home win, so the leg backs Home i."""
+        return football_row(
+            i, prob_home=prob_home, prob_draw=0.10, prob_away=0.05,
+            double_chance_1x_prob=0.95, double_chance_12_prob=0.60, double_chance_x2_prob=0.15,
+            over_1_5_prob=0.80, over_2_5_prob=0.60, over_3_5_prob=0.35, btts_yes_prob=0.45,
+            home_form=form, away_form="LLLLL", home_rating=1620, away_rating=1450, **overrides
+        )
+
+    def slip(self, rows):
+        result = slips.build_filter(rows, prices={}, now=NOW, day_count=1)
+        return next(s for s in result["slips"] if s["target"] == 2.0)
+
+    def test_a_result_leg_records_the_side_it_backs(self):
+        leg = slips.best_leg(self.backing(0, "WWDLW"))
+        self.assertEqual(leg["selection"], "1")
+        self.assertEqual((leg["backed_team"], leg["backed_form"], leg["backed_rating"]), ("Home 0", "WWDLW", 1620))
+
+    def test_an_away_selection_backs_the_away_side(self):
+        row = football_row(0, prob_home=0.05, prob_draw=0.10, prob_away=0.85, away_form="WLWWW", away_rating=1640,
+                          over_1_5_prob=0.80, over_2_5_prob=0.60, btts_yes_prob=0.45)
+        leg = slips.best_leg(row)
+        self.assertEqual(leg["selection"], "2")
+        self.assertEqual((leg["backed_team"], leg["backed_form"], leg["backed_rating"]), ("Away 0", "WLWWW", 1640))
+
+    def test_a_totals_leg_backs_nobody(self):
+        leg = slips.best_leg(football_row(0, home_form="WWWWW", away_form="LLLLL"))
+        self.assertEqual(leg["selection"], "O1.5")
+        self.assertEqual((leg["backed_team"], leg["backed_form"], leg["backed_rating"]), (None, None, None))
+
+    def test_form_wins_reads_the_most_recent_five(self):
+        self.assertEqual(slips.form_wins("WWWWW"), 5)
+        self.assertEqual(slips.form_wins("LDWWL"), 2)
+        self.assertEqual(slips.form_wins("LLWWWWWW"), 5)  # only the last five count
+        self.assertIsNone(slips.form_wins(""))
+        self.assertIsNone(slips.form_wins(None))
+
+    def test_a_five_win_side_edges_out_a_marginally_more_likely_side_out_of_form(self):
+        rows = [self.backing(i, "WWWWW") if i % 2 else self.backing(i, "LLLLL", prob_home=0.87) for i in range(6)]
+        legs = self.slip(rows)["legs"]
+        # the slip fills up to its target, and every five-win leg is taken before any of the
+        # marginally likelier out-of-form ones
+        self.assertEqual([leg["backed_form"] for leg in legs], ["WWWWW"] * 3 + ["LLLLL"] * 2)
+
+    def test_the_nudge_never_displaces_a_clearly_safer_leg(self):
+        # 0.90 x 1.015 = 0.914 still beats 0.78 x 1.075 = 0.839
+        rows = [self.backing(0, "WWWWW", prob_home=0.78)] + [self.backing(i, "LLLLL", prob_home=0.90) for i in range(1, 6)]
+        legs = self.slip(rows)["legs"]
+        self.assertEqual(legs[0]["prob"], 0.90)
+        self.assertEqual(legs[-1]["home_team"], "Home 0")
+
+
+class TopTierOnlyTest(unittest.TestCase):
+    """Slip legs come only from top-tier football - the world's top flights and the
+    continental competitions, never the second divisions."""
+
+    def build(self, rows):
+        return slips.build_filter(rows, prices={}, now=NOW, day_count=1)
+
+    def all_legs(self, result):
+        legs = [leg for slip in result["slips"] for leg in slip["legs"]]
+        if result["main_slip"]:
+            legs += result["main_slip"]["legs"]
+        return legs
+
+    def test_second_division_rows_never_become_legs(self):
+        # eight perfect second-division favourites - not one of them may reach a slip
+        result = self.build([football_row(i, league="E1", competition="Championship") for i in range(8)])
+        self.assertEqual(result["n_available"], 0)
+        self.assertEqual(result["slips"], [])
+        self.assertIsNone(result["main_slip"])
+
+    def test_top_flights_world_leagues_and_continental_ties_are_all_leg_material(self):
+        for code in ("UCL", "UEL", "UECL", "ACLE", "ACL2", "LIB", "SUD", "CCC", "CAFCL",
+                     "E0", "SP1", "D1", "I1", "F1", "P1", "N1", "T1", "B1", "SC0",
+                     "BRA", "ARG", "MEX", "USA", "JPN", "CHN"):
+            self.assertEqual(self.build([football_row(0, league=code)])["n_available"], 1, code)
+
+    def test_second_divisions_are_the_only_football_competitions_left_out(self):
+        for code in sorted(slips.NON_TOP_TIER_LEAGUES):
+            self.assertEqual(
+                self.build([football_row(0, league=code), football_row(1, league="E0")])["n_available"], 1, code
+            )
+
+    def test_no_second_division_ever_reaches_a_finished_slip(self):
+        rows = [football_row(i, kickoff_hours=6 + i, league="E0") for i in range(6)]
+        rows += [football_row(50 + i, kickoff_hours=6 + i, league="E1") for i in range(6)]
+        result = self.build(rows)
+        legs = self.all_legs(result)
+        self.assertTrue(legs)
+        self.assertEqual({leg["league"] for leg in legs}, {"E0"})
+
+    def test_a_second_division_row_still_loses_even_when_it_would_fund_the_whole_slip(self):
+        rows = [football_row(i, league="E0") for i in range(6)] + [football_row(9, league="SP2", prob_home=0.98)]
+        result = self.build(rows)
+        self.assertTrue(result["slips"])
+        for slip in result["slips"]:
+            self.assertNotIn("SP2", {leg["league"] for leg in slip["legs"]})
 
 
 class WriteTest(unittest.TestCase):

@@ -4,6 +4,10 @@ For every upcoming match the model already prices a whole board of markets. This
 picks, per match, the SINGLE selection the model is most confident in whose decimal odds sit
 in a low-risk band (default 1.10-1.40) - the "best prediction" for that price - and then
 combines selections from different matches into slips whose total odds fall in 2.0-4.5.
+Legs come only from top-tier football - the world's top flights and the continental
+competitions, never second divisions (see NON_TOP_TIER_LEAGUES) - and, among legs the model
+likes about equally, the side that keeps winning is preferred (see CONSISTENCY_WEIGHT): the
+top flight's in-form clubs are what these slips are built around.
 
 Odds come from the 1xLite betting app when xlite.py can resolve the fixture there; otherwise
 the model's fair odds (1 / probability) stand in, and each leg records which was used.
@@ -15,10 +19,11 @@ Six filters are produced from the same run time: 1, 2, 3, 4, 7 and 14 days. Each
 carries a headline "main slip" (every leg 1.10-1.30, total 2.00-3.50) plus up to three wider
 combination slips.
 
-Every finished slip also carries a "bet code" - the slip itself packed into one copyable
-string (PSB1-<base64url>), in the spirit of a bookmaker's slip code. 1xBet only accepts codes
-minted inside its own app, so this code is ours: share it, save it, or paste it back into the
-Prediction Slip tab to reload the exact selections even after the data has been rebuilt.
+Every finished slip also carries a five-character slip code (letters and digits, no
+lookalikes) - the shape a bookmaker's app prints when you save a bet slip - plus the same
+slip packed into one longer string (PSB1-<base64url>) that survives a data rebuild. 1xBet
+mints its own codes and accepts no other, so the page hands these picks over as text for
+1xBet's bet slip; the short code is what this site reopens a slip with.
 
 The result is a plain JSON snapshot (like everything else the site shows), so the page needs
 no server and this can be regenerated without re-running any model:
@@ -28,6 +33,7 @@ no server and this can be regenerated without re-running any model:
 
 import base64
 import datetime as dt
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -42,6 +48,22 @@ OUT_PATH = ROOT / "server" / "public" / "data" / "slips.json"
 DAY_START_HOUR = 4
 DAY_TZ = dt.timezone(dt.timedelta(hours=5, minutes=45))  # Asia/Kathmandu
 DAY_TZ_NAME = "Asia/Kathmandu"
+
+# Second divisions: never slip material. The slips are a top-flight product - the legs are
+# the world's top-tier leagues (Europe's top flights, Argentina, Brazil, Mexico, MLS, Japan,
+# China) plus the continental competitions, where the most consistently performing sides
+# live and where a short price actually means what it says. A promotion-race favourite in a
+# second division is a different kind of bet, and it isn't ours.
+NON_TOP_TIER_LEAGUES = {"E1", "SP2", "D2", "I2", "F2", "SC1"}
+
+# A fixture whose backed side has won its last five is the same bet as one backing a side
+# that has lost its last five, as far as the model's single-match probability is concerned -
+# form is already one of its features. At the slip level the two are not equivalent: a slip
+# is a chain of legs, so it wants the sides that do this every week. Each win in the last
+# five adds this much to a leg's ranking score, which tops out at a 7.5% edge - enough to
+# win a near-tie, never enough to displace a leg the model rates clearly safer.
+CONSISTENCY_WEIGHT = 0.015
+FORM_LENGTH = 5
 
 # Each leg must be a low-risk, low-price favourite: the whole point of a slip is many
 # near-certain legs rather than one long shot.
@@ -149,6 +171,31 @@ def match_key(row) -> tuple:
     return (row.get("league"), row.get("home_team"), row.get("away_team"))
 
 
+def form_wins(form) -> int | None:
+    """How many of the last five the side won (0-5), or None when the feed gave no form.
+    ESPN's form string is newest-last ('WWDLW'), so the tail is the most recent run."""
+    if not form:
+        return None
+    recent = [c for c in str(form).upper() if c in "WDL"][-FORM_LENGTH:]
+    return sum(1 for c in recent if c == "W") if recent else None
+
+
+def backed_side(row, code: str):
+    """(team, form, rating) for the side a selection is actually backing, or Nones for a
+    market that backs nobody (totals, both-teams-to-score, the draw)."""
+    side = {"1": "home", "1X": "home", "2": "away", "X2": "away"}.get(code)
+    if side is None or (row.get("sport") or "football") != "football":
+        return None, None, None
+    return row.get(f"{side}_team"), row.get(f"{side}_form"), row.get(f"{side}_rating")
+
+
+def leg_score(leg: dict) -> float:
+    """A leg's probability, nudged towards the sides that have been winning consistently
+    (see CONSISTENCY_WEIGHT) - the ranking the "safest" slip is built on."""
+    wins = form_wins(leg.get("backed_form"))
+    return leg["prob"] * (1 + CONSISTENCY_WEIGHT * (wins if wins is not None else 0))
+
+
 def kickoff_of(row):
     """The match's kickoff as a tz-aware UTC datetime, or None if the row carries no date."""
     raw = row.get("kickoff_utc")
@@ -211,6 +258,7 @@ def best_leg(row, prices: dict = None, lo: float = LEG_ODDS_MIN, hi: float = LEG
     if best is None:
         return None
     prob, code, market, label, odds = best
+    backed_team, backed_form, backed_rating = backed_side(row, code)
     return {
         "match_key": "|".join(str(part) for part in match_key(row)),
         "league": row.get("league"),
@@ -227,12 +275,18 @@ def best_leg(row, prices: dict = None, lo: float = LEG_ODDS_MIN, hi: float = LEG
         "prob": round(prob, 4),
         "odds": round(odds, 3),
         "odds_source": "1xlite" if real else "model",
+        # whose form/rating this leg is actually backing (None for a totals/BTTS leg) -
+        # leg_score uses the form, and the slip shows it for context
+        "backed_team": backed_team,
+        "backed_form": backed_form,
+        "backed_rating": backed_rating,
     }
 
 
 def _order(legs, strategy: str):
     if strategy == "safest":
-        return sorted(legs, key=lambda leg: (-leg["prob"], leg["odds"], leg["kickoff_utc"]))
+        # probability first, then the consistency nudge to order near-ties
+        return sorted(legs, key=lambda leg: (-round(leg_score(leg), 4), -leg["prob"], leg["odds"], leg["kickoff_utc"]))
     if strategy == "soonest":
         return sorted(legs, key=lambda leg: (leg["kickoff_utc"], -leg["prob"]))
     return sorted(legs, key=lambda leg: (-leg["odds"], -leg["prob"]))  # biggest-price legs first
@@ -275,10 +329,11 @@ def _product_prob(legs) -> float:
 def build_main_slip(legs: list):
     """The one headline bet for a window: the surest selections, every leg priced within
     1.10-1.30, stacked until the slip pays at least 2.00 and never more than 3.50. Legs are
-    taken most-likely-first, so the finished slip is as safe as it can be for that payout."""
+    taken most-likely-first - with the consistency nudge ordering near-ties, the same way the
+    "safest" combination slip is ordered - so the finished slip is as safe as it can be."""
     if not legs:
         return None
-    ordered = sorted(legs, key=lambda leg: (-leg["prob"], leg["odds"], leg["kickoff_utc"]))
+    ordered = sorted(legs, key=lambda leg: (-round(leg_score(leg), 4), -leg["prob"], leg["odds"], leg["kickoff_utc"]))
     total, chosen, used = 1.0, [], set()
     for leg in ordered:
         if total >= MAIN_SLIP_ODDS_MIN or len(chosen) >= MAX_LEGS:
@@ -301,11 +356,57 @@ def build_main_slip(legs: list):
     }
 
 
-# ---- Bet codes ------------------------------------------------------------
-# A slip is useless once you've closed the tab, so every slip also gets a code: the whole
-# slip packed into one copyable string. It carries the matches, picks and prices itself,
-# so a saved slip still loads after the page's data has been rebuilt underneath it.
+# ---- Slip codes -----------------------------------------------------------
+# A slip is useless once you've closed the tab, so every slip gets a short code - five
+# characters, letters and digits, the shape a bookmaker's app prints when you save a bet
+# slip. Ours is minted here, not by 1xBet: 1xBet only accepts codes made inside 1xBet, so
+# the code is a PredictSys one, resolvable against the published slips.
+#
+# Two codes are carried, because they answer different questions:
+#   code          5 characters - what a person types or reads out; it points at a slip in
+#                 this snapshot, so it is short but only resolves while that slip is listed.
+#   code_payload  the whole slip packed into one longer string (PSB1-<base64url>). It
+#                 carries the matches, picks and prices itself, so "Save slip" keeps one
+#                 loadable on this device even after the data underneath has been rebuilt.
 CODE_PREFIX = "PSB1-"
+# 32 symbols: 0/O and 1/I are left out so a code read off a screen can't be mistyped.
+CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+CODE_LENGTH = 5
+
+
+def short_code(slip: dict, window_label: str, kind: str, salt: int = 0) -> str:
+    """The 5-character code for one slip. Deterministic - the same slip always mints the
+    same code - so a code a visitor copied keeps working until that slip leaves the feed."""
+    legs = [[leg.get("match_key"), leg.get("selection"), leg.get("label")] for leg in slip["legs"]]
+    seed = json.dumps([salt, window_label, kind, slip["total_odds"], legs], separators=(",", ":"))
+    value = int.from_bytes(hashlib.sha256(seed.encode("utf-8")).digest()[:8], "big")
+    out = []
+    for _ in range(CODE_LENGTH):
+        value, remainder = divmod(value, len(CODE_ALPHABET))
+        out.append(CODE_ALPHABET[remainder])
+    return "".join(out)
+
+
+def assign_slip_codes(filters: list) -> None:
+    """Give every slip in the snapshot its two codes, never handing out the same 5-character
+    code twice (two slips sharing a code would make one of them unreachable)."""
+    used = set()
+    for entry in filters:
+        label = entry.get("label") or ""
+        slips_in_entry = ([("main", entry["main_slip"])] if entry.get("main_slip") else []) + [
+            ("combo", slip) for slip in entry.get("slips") or []
+        ]
+        for kind, slip in slips_in_entry:
+            salt = 0
+            code = short_code(slip, label, kind)
+            while code in used:
+                salt += 1
+                code = short_code(slip, label, kind, salt)
+            used.add(code)
+            slip["code"] = code
+            slip["code_payload"] = encode_slip_code(slip, label, kind)
+            slip["kind"] = kind
+            slip["window"] = label
 
 
 def encode_slip_code(slip: dict, window_label: str, kind: str) -> str:
@@ -364,6 +465,8 @@ def build_filter(rows, prices: dict, now: dt.datetime, day_count: int) -> dict:
     end = start + dt.timedelta(days=day_count)
     legs, main_legs = [], []
     for row in rows:
+        if (row.get("sport") or "football") == "football" and row.get("league") in NON_TOP_TIER_LEAGUES:
+            continue  # second divisions aren't top-tier football - see NON_TOP_TIER_LEAGUES
         when = kickoff_of(row)
         if when is None or not (start <= when < end):
             continue
@@ -409,16 +512,15 @@ def build_slips(rows, now: dt.datetime = None, odds: dict = None) -> dict:
         entry["id"] = filter_id
         entry["label"] = label
         entry["day_count"] = day_count
-        if entry["main_slip"] is not None:
-            entry["main_slip"]["code"] = encode_slip_code(entry["main_slip"], label, "main")
-        for slip in entry["slips"]:
-            slip["code"] = encode_slip_code(slip, label, "combo")
         filters.append(entry)
+    assign_slip_codes(filters)
     return {
         "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "day_start_hour": DAY_START_HOUR,
         "day_start_tz": DAY_TZ_NAME,
         "code_prefix": CODE_PREFIX,
+        "code_length": CODE_LENGTH,
+        "code_alphabet": CODE_ALPHABET,
         "leg_odds_range": [LEG_ODDS_MIN, LEG_ODDS_MAX],
         "slip_odds_range": [SLIP_ODDS_MIN, SLIP_ODDS_MAX],
         "main_leg_odds_range": [MAIN_LEG_ODDS_MIN, MAIN_LEG_ODDS_MAX],

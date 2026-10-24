@@ -97,6 +97,26 @@ class SiteExportTest(unittest.TestCase):
         self.assertNotIn(("Legacy", "Club"), names)  # an old date-only row whose date has passed
         self.assertEqual([r["kickoff_utc"] for r in data["rows"]], sorted(r["kickoff_utc"] for r in data["rows"]))  # soonest first
 
+    def test_predictions_publish_the_league_popularity_order(self):
+        data = self.load("predictions.json")
+        self.assertEqual(data["league_order"], site_export.LEAGUE_POPULARITY)
+        self.assertEqual(data["league_order"][:3], ["E0", "UCL", "SP1"])  # the Premier League leads
+
+    def test_the_popularity_order_names_every_league_exactly_once(self):
+        order = site_export.LEAGUE_POPULARITY
+        self.assertEqual(len(order), len(set(order)))
+        # nothing the site can name (a domestic league, a continental tie, the NBA, a tennis
+        # tour, national teams) may be missing from the order it is listed in
+        self.assertEqual(set(order), set(site_export.LEAGUE_NAMES))
+
+    def test_the_track_record_lists_leagues_in_popularity_order(self):
+        board = self.load("scoreboard.json")
+        leagues = [r["league"] for r in board if r["league"] != "ALL"]
+        self.assertEqual(leagues, sorted(leagues, key=site_export.league_rank))
+
+    def test_an_unknown_league_sorts_after_every_known_one(self):
+        self.assertGreater(site_export.league_rank("ZZZ"), site_export.league_rank("WTA"))
+
     def test_each_row_carries_what_the_page_needs(self):
         spain = next(r for r in self.load("predictions.json")["rows"] if r["home_team"] == "Spain")
         self.assertEqual((spain["sport"], spain["competition"], spain["country"], spain["league_name"]), ("football", "UEFA Nations League", "International", "UEFA Nations League"))
@@ -155,6 +175,25 @@ class SiteExportTest(unittest.TestCase):
         self.assertEqual((site_export.group_of("ATP"), site_export.group_of("WTA")), ("ATP Tour", "WTA Tour"))
         self.assertEqual(site_export.competition_of("SP1"), "La Liga")
         self.assertEqual((site_export.group_of("NBA"), site_export.competition_of("NBA")), ("Basketball", "NBA"))
+
+    def test_every_competition_the_pipeline_can_predict_has_a_name_and_a_group(self):
+        import espn
+        from fetch_data import ALL_LEAGUES
+
+        codes = set(ALL_LEAGUES) | set(espn.CONTINENTAL_SLUGS)
+        self.assertEqual(codes - set(site_export.LEAGUE_NAMES), set())  # never a bare code on the page
+        # continental competitions file under their confederation
+        self.assertEqual((site_export.group_of("UCL"), site_export.competition_of("UCL")), ("UEFA", "UEFA Champions League"))
+        self.assertEqual((site_export.group_of("UEL"), site_export.competition_of("UEL")), ("UEFA", "UEFA Europa League"))
+        self.assertEqual((site_export.group_of("UECL"), site_export.competition_of("UECL")), ("UEFA", "UEFA Conference League"))
+        self.assertEqual((site_export.group_of("LIB"), site_export.competition_of("LIB")), ("CONMEBOL", "CONMEBOL Libertadores"))
+        self.assertEqual((site_export.group_of("ACLE"), site_export.competition_of("ACLE")), ("AFC", "AFC Champions League Elite"))
+        self.assertEqual((site_export.group_of("ACL2"), site_export.competition_of("ACL2")), ("AFC", "AFC Champions League Two"))
+        self.assertEqual((site_export.group_of("CAFCL"), site_export.competition_of("CAFCL")), ("CAF", "CAF Champions League"))
+        # the world leagues file under their country
+        self.assertEqual((site_export.group_of("ARG"), site_export.competition_of("ARG")), ("Argentina", "Liga Profesional"))
+        self.assertEqual((site_export.group_of("BRA"), site_export.competition_of("BRA")), ("Brazil", "Serie A"))
+        self.assertEqual((site_export.group_of("USA"), site_export.competition_of("USA")), ("USA", "Major League Soccer"))
 
     def test_an_empty_database_still_produces_valid_files(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(storage, "DB_PATH", Path(tmp) / "empty.db"):

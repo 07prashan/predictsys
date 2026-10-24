@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Daily predictions for European club football, national-team matches, NBA basketball and ATP/WTA tennis - every day for the week ahead - from Elo, gradient boosting and Poisson models, with a public track record.">
+  <meta name="description" content="Daily predictions for 23 domestic football leagues, 11 continental competitions, national-team matches, NBA basketball and ATP/WTA tennis - every day for the week ahead - from Elo, gradient boosting and Poisson models, with a public track record.">
   <meta name="theme-color" content="#123f3a">
   <title>PredictSys — Football, NBA &amp; tennis predictions</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
@@ -11,7 +11,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
+  <!-- The ?v= stamps are cache keys: bump them whenever app.js or styles.css change, so a
+       browser holding yesterday's script can never run it against today's markup. -->
+  <link rel="stylesheet" href="styles.css?v=3">
 </head>
 <body>
   <!-- Shared brand mark, reused via <use> in the header and footer so it's defined once. -->
@@ -42,7 +44,7 @@
         <svg class="brand-mark" width="40" height="40" aria-hidden="true"><use href="#logo-mark"></use></svg>
         <span class="brand-text">
           <h1 class="brand-name">Predict<span class="brand-accent">Sys</span></h1>
-          <p class="tagline">Football (17 European divisions + national teams), NBA basketball and ATP/WTA tennis, predicted for the week ahead</p>
+          <p class="tagline">Football (23 domestic leagues, 11 continental competitions, national teams), NBA basketball and ATP/WTA tennis, predicted for the week ahead</p>
         </span>
       </div>
     </div>
@@ -62,7 +64,7 @@
           <path d="M4 6h16M4 12h16M4 18h10"/>
           <circle cx="18" cy="18" r="2.6"/>
         </svg>
-        <span>Prediction Slip</span>
+        <span>Slips</span>
       </button>
       <button class="tab-btn" data-tab="track-record" role="tab" aria-selected="false" aria-controls="track-record" id="tab-track-record" tabindex="-1">
         <svg class="tab-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -138,14 +140,13 @@
       </div>
       <div class="betcode-bar">
         <div class="betcode-load">
-          <label class="sr-only" for="betcode-input">Bet code</label>
-          <input id="betcode-input" type="text" placeholder="Paste a bet code (PSB1-&#8230;)" autocomplete="off" spellcheck="false">
-          <button id="betcode-load" class="chip">Load code</button>
+          <label class="sr-only" for="betcode-input">Slip code</label>
+          <input id="betcode-input" type="text" placeholder="Slip code, 5 letters or digits" maxlength="40" autocomplete="off" spellcheck="false" autocapitalize="characters">
+          <button id="betcode-load" class="chip">Load slip</button>
         </div>
-        <span class="betcode-note">Every slip has its own bet code - copy it from a slip, save the slip, or paste a code here to load it back. <b>Copy for 1xBet</b> copies the picks as text, because the 1xBet app only loads codes created inside itself.</span>
+        <span class="betcode-note">Every slip carries a five-character code - type it here to open that slip on any device, or copy it to pass the slip on. 1xBet mints its own codes, so <b>Copy picks for 1xBet</b> hands you the selections as text to add in the 1xBet bet slip.</span>
       </div>
       <p class="betcode-error" id="betcode-error" role="alert" hidden></p>
-      <div id="slip-load-result" aria-live="polite"></div>
       <div id="slips-content" aria-live="polite">
         <div class="match-list" aria-hidden="true">
           <div class="skeleton-row">
@@ -161,7 +162,6 @@
         </div>
         <span class="sr-only">Loading slips…</span>
       </div>
-      <div id="saved-slips"></div>
     </section>
 
     <section id="track-record" class="tab-panel" role="tabpanel" aria-labelledby="tab-track-record" tabindex="0">
@@ -205,6 +205,6 @@
     </div>
   </div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=3"></script>
 </body>
 </html>

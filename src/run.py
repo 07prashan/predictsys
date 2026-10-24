@@ -13,10 +13,11 @@ from xgboost import XGBClassifier
 from backtest import OUTCOME_CODES, OUTCOMES, decay_weights, walk_forward_backtest
 from elo import EloConfig, run_ratings
 from features import run_features
-from fetch_data import LEAGUES, fetch_seasons
+from fetch_data import ALL_LEAGUES, LEAGUES, WORLD_LEAGUES, fetch_seasons, load_world_league
 from poisson_model import poisson_walk_forward
 from xg import fetch_xg
 
+CLUB_HISTORY_START = 2017  # every league's modeled history starts here, European or not
 SEASON_START_YEARS = range(2017, 2026)  # 2017/18 through 2025/26
 
 # tune.py's search results - shared here so predict.py fits the exact same models
@@ -105,11 +106,23 @@ def load_raw_matches(season_start_years=None, force_years: set = None) -> dict:
     lets tune.py try many different Elo configs without re-fetching anything.
 
     force_years re-fetches those specific seasons even if cached - predict.py uses this
-    for the in-progress season, which gains new results every week."""
+    for the in-progress season, which gains new results every week.
+
+    European leagues come from football-data's per-season files; the world leagues from
+    their one-file-per-country files (a single refetch covers every season at once)."""
     season_start_years = season_start_years if season_start_years is not None else SEASON_START_YEARS
     raw = {}
     for code in LEAGUES:
         matches = load_league(code, season_start_years, force_years)
+        xg = fetch_xg(code, season_start_years, force_years)
+        raw[code] = matches.merge(xg, on=["season", "HomeTeam", "AwayTeam"], how="left")
+    for code in WORLD_LEAGUES:
+        # the in-progress season is what force_years means here too: a calendar-year
+        # league is mid-season all the time, so its file is refetched when stale anyway,
+        # and `force` simply bypasses the cache age check on a scheduled run.
+        # xG: Understat covers only the big five European leagues, so this merges in as
+        # all-NaN - features.py already treats missing xG as "no xG for this match".
+        matches = load_world_league(code, force=bool(force_years))
         xg = fetch_xg(code, season_start_years, force_years)
         raw[code] = matches.merge(xg, on=["season", "HomeTeam", "AwayTeam"], how="left")
     return raw
@@ -128,7 +141,7 @@ def build_dataset(elo_config: EloConfig = None, raw: dict = None, verbose: bool 
     raw = raw if raw is not None else load_raw_matches()
     per_league = []
     state = {}
-    for code, name in LEAGUES.items():
+    for code, name in ALL_LEAGUES.items():
         matches = raw[code]
         rated, engine = run_ratings(matches, elo_config)
         featured, tracker = run_features(rated)

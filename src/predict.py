@@ -1,6 +1,8 @@
-"""Predict upcoming matches across everything this site covers - club football in 17
-European divisions, national-team football, ATP/WTA tennis, and NBA basketball (preseason
-included) - log those predictions,
+"""Predict upcoming matches across everything this site covers - club football in 23
+leagues (Europe's top flights and second divisions, plus the top flights of Argentina,
+Brazil, Mexico, the USA, Japan and China), the continental club competitions (UCL, UEL,
+Conference League, Libertadores, ACL Elite, ...), national-team football, ATP/WTA tennis,
+and NBA basketball (preseason included) - log those predictions,
 and settle any earlier predictions whose matches have since been played.
 
 This is the one script meant to run on a schedule - each run: refreshes the
@@ -29,6 +31,7 @@ import requests
 from sklearn.linear_model import LogisticRegression
 
 import espn
+import continental
 import intl
 import nba
 import site_export
@@ -36,10 +39,11 @@ import storage
 import tennis
 from backtest import OUTCOME_CODES, OUTCOMES, decay_weights
 from elo import EloConfig
-from fetch_data import LEAGUES, current_season_start_year
+from fetch_data import ALL_LEAGUES, WORLD_LEAGUES, current_season_start_year
 from fetch_fixtures import fetch_fixtures
 from poisson_model import best_pick, fit_for_prediction, predict_fixtures
 from run import (
+    CLUB_HISTORY_START,
     ELO_FEATURES,
     GBM_DECAY_HALF_LIFE_DAYS,
     GBM_FEATURES,
@@ -55,7 +59,7 @@ from team_match import match_clubs
 # this is comfortably more than that - the extra days are what a Saturday-to-Saturday
 # lookahead needs, and still near enough that the ratings behind a prediction aren't stale.
 HORIZON_DAYS = 14
-SPORTS = ("clubs", "intl", "tennis", "nba")
+SPORTS = ("clubs", "continental", "intl", "tennis", "nba")
 
 
 def build_feature_row(fixture: pd.Series, engine, tracker, elo_config: EloConfig) -> dict:
@@ -130,6 +134,10 @@ def espn_club_fixtures(soccer: pd.DataFrame, raw: dict) -> pd.DataFrame:
         keep = group[group["home"].isin(resolved) & group["away"].isin(resolved)]
         form = recent_form(league)
         home, away = keep["home"].map(resolved), keep["away"].map(resolved)
+        # a calendar-year league (Argentina, Brazil, MLS, ...) starts its season in the
+        # same calendar year a kickoff falls in; European leagues straddle two years, so
+        # their season is the one that started last July (or this July, from July onward)
+        season = keep["kickoff_utc"].dt.year if code in WORLD_LEAGUES else current_season_start_year()
         frames.append(
             pd.DataFrame(
                 {
@@ -137,6 +145,7 @@ def espn_club_fixtures(soccer: pd.DataFrame, raw: dict) -> pd.DataFrame:
                     "Date": keep["kickoff_utc"].dt.tz_convert(None).dt.normalize(),
                     "HomeTeam": home,
                     "AwayTeam": away,
+                    "season": season,
                     "kickoff_utc": keep["kickoff_utc"],
                     "external_id": keep["external_id"],
                     "home_logo": keep["home_logo"],
@@ -198,12 +207,8 @@ def tennis_settlements(results: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def run_clubs(conn, soccer: pd.DataFrame) -> None:
-    current_year = current_season_start_year()
-    season_start_years = range(2017, current_year + 1)
-
+def run_clubs(conn, soccer: pd.DataFrame, raw: dict, current_year: int) -> None:
     print(f"=== Loading history through the in-progress {current_year}/{current_year + 1 - 2000} season ===\n")
-    raw = load_raw_matches(season_start_years, force_years={current_year})
     all_matches, state = build_dataset(elo_config=TUNED_ELO_CONFIG, raw=raw, return_state=True)
     all_matches["league"] = all_matches["league"].astype("category")
     print(f"\n{len(all_matches)} matches total.\n")
@@ -229,7 +234,10 @@ def run_clubs(conn, soccer: pd.DataFrame) -> None:
     if fixtures.empty:
         print("Nothing to predict right now.")
     else:
-        fixtures["season"] = current_year
+        # ESPN's schedule tags each fixture with its own season (a calendar-year league's
+        # fixture belongs to the year it's played in); football-data's fallback feed has no
+        # such column, and only ever lists European leagues, where the current season is right
+        fixtures["season"] = fixtures["season"].fillna(current_year).astype(int)
         feature_rows = [
             build_feature_row(fx, *state[fx["league"]], TUNED_ELO_CONFIG) for _, fx in fixtures.iterrows()
         ]
@@ -283,10 +291,24 @@ def run_clubs(conn, soccer: pd.DataFrame) -> None:
     # settling runs regardless of whether there were new fixtures to predict this time -
     # matches from an earlier run can finish even on a day with nothing new to forecast
     results_by_league = {
-        code: raw[code][["Date", "HomeTeam", "AwayTeam", "FTR", "FTHG", "FTAG"]].dropna() for code in LEAGUES
+        code: raw[code][["Date", "HomeTeam", "AwayTeam", "FTR", "FTHG", "FTAG"]].dropna() for code in ALL_LEAGUES
     }
     n_settled = storage.settle(conn, results_by_league)
     print(f"{n_settled} previously-logged club predictions settled with real results.")
+
+
+def run_continental(conn, soccer: pd.DataFrame, raw: dict, today: dt.date) -> None:
+    print("\n=== Continental club competitions ===\n")
+    out = continental.build(raw, soccer, today, HORIZON_DAYS)
+    if len(out["predictions"]):
+        print(
+            out["predictions"][["league", "kickoff_utc", "home_team", "away_team", "prob_home", "prob_draw", "prob_away", "best_pick_label"]]
+            .to_string(index=False)
+        )
+    n_new = storage.save_predictions(conn, out["predictions"], predicted_at=dt.datetime.now().isoformat()) if len(out["predictions"]) else 0
+    print(f"\n{n_new} new continental predictions saved.")
+    storage.save_matches(conn, out["matches"])
+    storage.save_team_ratings(conn, out["ratings"])
 
 
 def run_national_teams(conn, history: pd.DataFrame, soccer: pd.DataFrame, today: dt.date) -> None:
@@ -352,14 +374,24 @@ def main(only: list = None) -> int:
             traceback.print_exc()
             return None
 
-    # one ESPN football download is shared by the club and national-team sides
+    # one ESPN football download is shared by the club, continental and national-team sides
     history = attempt("national-team history", intl.load_history) if "intl" in sports else None
     soccer = pd.DataFrame(columns=espn.SOCCER_COLUMNS)
-    if sports & {"clubs", "intl"}:
+    if sports & {"clubs", "intl", "continental"}:
         start = intl.espn_window_start(history, today) if history is not None else today - dt.timedelta(days=10)
         print("=== Fetching football schedule and results from ESPN ===\n")
         soccer = espn.fetch_soccer(start, today + dt.timedelta(days=HORIZON_DAYS + 1))
         print(f"{len(soccer)} ESPN football matches ({start} to {today + dt.timedelta(days=HORIZON_DAYS + 1)}).")
+
+    # the domestic history is shared by the club-league models and the global continental
+    # scale - fetched once here, not per part, so a run never downloads it twice
+    current_year = current_season_start_year()
+    raw = None
+    if sports & {"clubs", "continental"}:
+        raw = attempt(
+            "club history",
+            lambda: load_raw_matches(range(CLUB_HISTORY_START, current_year + 1), force_years={current_year}),
+        )
 
     settlements = []
     if "intl" in sports and history is not None:
@@ -372,8 +404,10 @@ def main(only: list = None) -> int:
         nba_done = attempt("nba", lambda: run_nba(conn, today))
         if nba_done is not None:
             settlements.append(nba_done)
-    if "clubs" in sports:
-        attempt("club leagues", lambda: run_clubs(conn, soccer))
+    if "continental" in sports and raw is not None:
+        attempt("continental competitions", lambda: run_continental(conn, soccer, raw, today))
+    if "clubs" in sports and raw is not None:
+        attempt("club leagues", lambda: run_clubs(conn, soccer, raw, current_year))
 
     # ESPN's finished football and tennis matches settle any stored prediction carrying the
     # same ESPN id - fast (no waiting for football-data's results files) and name-independent
