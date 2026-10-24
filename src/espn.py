@@ -1,4 +1,4 @@
-"""Fixtures AND results for national-team football, 23 domestic leagues (Europe plus the
+"""Fixtures AND results for national-team football, 27 domestic leagues (Europe plus the
 top flights of South/North America and Asia), the continental club competitions, and
 ATP/WTA tennis, from ESPN's public scoreboard feed.
 
@@ -66,6 +66,10 @@ CLUB_LEAGUES = {
     735: "SC0", 3940: "SC1",
     # top flights outside Europe (football-data's "new format" leagues - see fetch_data)
     630: "BRA", 745: "ARG", 760: "MEX", 770: "USA", 750: "JPN", 8376: "CHN",
+    # European top flights from the same files: the Nordics and Russia. (Romania, Finland and
+    # Ireland are left out on purpose - ESPN's feeds for them are frozen or empty, so their
+    # history could never be met by a fixture.)
+    3913: "DNK", 3939: "RUS", 3960: "NOR", 3945: "SWE",
 }
 
 # Continental club competitions: ESPN league id -> (our league code, ESPN scoreboard slug,

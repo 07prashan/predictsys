@@ -82,9 +82,13 @@ LEAGUE_POPULARITY = [
     "N1",  # Eredivisie
     "T1",  # Super Lig
     "B1",  # Belgian Pro League
+    "DNK",  # Danish Superliga - the rest of Europe's top flights, in following order
+    "RUS",  # Russian Premier League
     "E1",  # Championship
     "SC0",  # Scottish Premiership
     "G1",  # Greek Super League
+    "NOR",  # Eliteserien
+    "SWE",  # Allsvenskan
     "SUD",  # Copa Sudamericana
     "CCC",  # Concacaf Champions Cup
     "ACLE",  # AFC Champions League Elite
@@ -109,6 +113,25 @@ LEAGUE_RANK = {code: i for i, code in enumerate(LEAGUE_POPULARITY)}
 def league_rank(code: str) -> int:
     """Where a league sits in the popularity order - unknown codes go after every known one."""
     return LEAGUE_RANK.get(code, len(LEAGUE_POPULARITY))
+
+
+# Not every competition deserves a full fixture list. The leagues below are published only
+# when the model is confident: their top flights are thinner (fewer seasons behind the
+# ratings, a wider spread of team strength), so a full list is mostly coin flips - and a
+# page full of 40% tips is worse than a short list of the ones worth reading. Everything
+# they play still lands in the database and the track record; only the weak fixtures stay
+# off the page.
+STRONG_PICKS_ONLY = {"NOR", "SWE"}
+STRONG_PICK_MIN = 0.65
+
+
+def publishes(row: dict) -> bool:
+    """Whether one prediction belongs on the page: every fixture for a full-coverage
+    league, only the confident ones for a STRONG_PICKS_ONLY league."""
+    if row.get("league") not in STRONG_PICKS_ONLY:
+        return True
+    prob = row.get("best_pick_prob")
+    return prob is not None and prob >= STRONG_PICK_MIN
 
 # A match with a kickoff time is over a few hours after it starts; an older row that only has a
 # date is over once that date has passed. Deliberately generous (a long tennis match runs for
@@ -236,7 +259,7 @@ def upcoming(conn: sqlite3.Connection, logos: Logos, now: dt.datetime) -> list:
             ORDER BY COALESCE(kickoff_utc, match_date) ASC""",
         (_iso(cutoff), _iso(cutoff)[:10]),
     )
-    return [_match_row(r, logos) for r in rows]
+    return [_match_row(r, logos) for r in rows if publishes(r)]
 
 
 def history(conn: sqlite3.Connection, logos: Logos) -> list:

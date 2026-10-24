@@ -70,6 +70,16 @@ CLUB_ALIASES = {
     "Vitória de Guimaraes": "Guimaraes",
     "Shanghai Port FC": "Shanghai Port",
     "West Ham United": "West Ham",
+    # Denmark and Russia (the two leagues added with the Nordics) - the ones ESPN spells
+    # differently enough that token matching finds no single candidate.
+    "AGF": "Aarhus",
+    "Brøndby IF": "Brondby",
+    "F.C. København": "FC Copenhagen",
+    "FC Nordsjælland": "Nordsjaelland",
+    "Sønderjyske Fodbold": "Sonderjyske",
+    "Akron Tolyatti": "Akron Togliatti",
+    "Dinamo Moscow": "Dynamo Moscow",
+    "Krylia Sovetov": "Krylya Sovetov",
 }
 
 # Tokens that say what KIND of club it is rather than which one: 'FC Porto' and 'Porto',

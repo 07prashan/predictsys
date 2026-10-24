@@ -37,6 +37,35 @@ def history_rows(league: str, results: list) -> pd.DataFrame:
     )
 
 
+class PublicationPolicyTest(unittest.TestCase):
+    """Every fixture from the full-coverage leagues; only the model's confident calls from
+    the thin ones (Norway and Sweden - see site_export.STRONG_PICKS_ONLY)."""
+
+    def test_a_thin_league_hides_its_coin_flips(self):
+        self.assertFalse(site_export.publishes({"league": "NOR", "best_pick_prob": 0.52}))
+        self.assertFalse(site_export.publishes({"league": "SWE", "best_pick_prob": 0.649}))
+
+    def test_a_thin_league_shows_its_confident_calls(self):
+        self.assertTrue(site_export.publishes({"league": "NOR", "best_pick_prob": 0.65}))
+        self.assertTrue(site_export.publishes({"league": "SWE", "best_pick_prob": 0.81}))
+
+    def test_a_full_coverage_league_publishes_every_fixture(self):
+        for league in ("E0", "D1", "DNK", "RUS", "UCL", "BRA"):
+            self.assertTrue(site_export.publishes({"league": league, "best_pick_prob": 0.34}))
+
+    def test_a_thin_league_row_without_a_probability_is_never_published(self):
+        self.assertFalse(site_export.publishes({"league": "NOR"}))
+
+
+def weak_and_strong_rows() -> list:
+    """One weak and one strong prediction in each kind of league, for the export test."""
+    return [
+        football_row(external_id="e:nor-weak", league="NOR", competition="Eliteserien", home_team="Brann", away_team="Viking", kickoff_utc=at(8), best_pick_prob=0.44, prob_home=0.44, prob_draw=0.29, prob_away=0.27),
+        football_row(external_id="e:nor-strong", league="NOR", competition="Eliteserien", home_team="Bodo/Glimt", away_team="Sandefjord", kickoff_utc=at(9), best_pick_prob=0.82, prob_home=0.82, prob_draw=0.12, prob_away=0.06),
+        football_row(external_id="e:den-weak", league="DNK", competition="Superliga", home_team="Vejle", away_team="Silkeborg", kickoff_utc=at(10), best_pick_prob=0.44, prob_home=0.44, prob_draw=0.29, prob_away=0.27),
+    ]
+
+
 class SiteExportTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -50,6 +79,7 @@ class SiteExportTest(unittest.TestCase):
 
         save = lambda *rows: storage.save_predictions(self.conn, pd.DataFrame(list(rows)), predicted_at="2026-10-01T00:00:00")
         save(
+            *weak_and_strong_rows(),
             football_row(external_id="e:upcoming", home_team="Spain", away_team="Czech Republic", kickoff_utc=at(6)),
             football_row(external_id="e:over", home_team="Italy", away_team="Turkey", kickoff_utc=at(-7)),  # kicked off 7h ago
             football_row(external_id="e:graded", home_team="France", away_team="Belgium", kickoff_utc=at(-30)),
@@ -96,6 +126,12 @@ class SiteExportTest(unittest.TestCase):
         self.assertNotIn(("France", "Belgium"), names)  # graded
         self.assertNotIn(("Legacy", "Club"), names)  # an old date-only row whose date has passed
         self.assertEqual([r["kickoff_utc"] for r in data["rows"]], sorted(r["kickoff_utc"] for r in data["rows"]))  # soonest first
+
+    def test_thin_leagues_publish_only_their_confident_fixtures(self):
+        names = {(r["home_team"], r["away_team"]) for r in self.load("predictions.json")["rows"]}
+        self.assertNotIn(("Brann", "Viking"), names)  # 44% in a thin league - kept off the page
+        self.assertIn(("Bodo/Glimt", "Sandefjord"), names)  # 82% - published
+        self.assertIn(("Vejle", "Silkeborg"), names)  # the same 44%, but Denmark is full coverage
 
     def test_predictions_publish_the_league_popularity_order(self):
         data = self.load("predictions.json")
@@ -166,7 +202,7 @@ class SiteExportTest(unittest.TestCase):
 
     def test_nothing_half_written_is_left_behind(self):
         self.assertEqual(list(self.out.rglob("*.tmp")), [])
-        self.assertEqual(self.stats["upcoming"], 2)
+        self.assertEqual(self.stats["upcoming"], 4)  # Spain, the tennis match, and two of the three new rows
         self.assertEqual(self.stats["history"], 1)
 
     def test_groupings_used_by_the_competition_view(self):

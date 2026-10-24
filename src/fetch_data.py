@@ -23,6 +23,18 @@ WORLD_LEAGUES = {
     "USA": ("Major League Soccer", "USA", "MLS"),
     "JPN": ("J1 League", "Japan", "J1 League"),
     "CHN": ("Super League", "China", "Super League"),
+    # European top flights published in the same one-file-per-country format. Denmark and
+    # Russia are followed closely enough to be full-coverage leagues; Norway and Sweden are
+    # published only when the model is confident (see site_export.STRONG_PICKS_ONLY).
+    #
+    # Romania, Finland and Ireland are NOT here: football-data publishes their results, but
+    # no fixture feed does (ESPN's rou.1/irl.1 scoreboards are frozen in 2025 and fin.1 is
+    # empty), so a model for them could never be shown a match to predict. Adding them is a
+    # one-line change once a fixture source covers them.
+    "DNK": ("Superliga", "Denmark", "Superliga"),
+    "RUS": ("Premier League", "Russia", "Premier League"),
+    "NOR": ("Eliteserien", "Norway", "Eliteserien"),
+    "SWE": ("Allsvenskan", "Sweden", "Allsvenskan"),
 }
 WORLD_LEAGUE_NAMES = {code: f"{name} ({country})" for code, (name, country, _league_in_csv) in WORLD_LEAGUES.items()}
 WORLD_FIRST_SEASON = 2017  # matches the European leagues' history window, so every model starts together
