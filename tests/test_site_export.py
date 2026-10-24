@@ -39,21 +39,26 @@ def history_rows(league: str, results: list) -> pd.DataFrame:
 
 class PublicationPolicyTest(unittest.TestCase):
     """Every fixture from the full-coverage leagues; only the model's confident calls from
-    the thin ones (Norway and Sweden - see site_export.STRONG_PICKS_ONLY)."""
+    the leagues named as "strong picks only" (see site_export.STRONG_PICKS_ONLY)."""
 
-    def test_a_thin_league_hides_its_coin_flips(self):
-        self.assertFalse(site_export.publishes({"league": "NOR", "best_pick_prob": 0.52}))
-        self.assertFalse(site_export.publishes({"league": "SWE", "best_pick_prob": 0.649}))
+    def test_a_gated_league_hides_its_coin_flips(self):
+        for league in ("NOR", "SWE", "USA", "SC0"):
+            self.assertFalse(site_export.publishes({"league": league, "best_pick_prob": 0.52}), league)
+            self.assertFalse(site_export.publishes({"league": league, "best_pick_prob": 0.649}), league)
 
-    def test_a_thin_league_shows_its_confident_calls(self):
-        self.assertTrue(site_export.publishes({"league": "NOR", "best_pick_prob": 0.65}))
-        self.assertTrue(site_export.publishes({"league": "SWE", "best_pick_prob": 0.81}))
+    def test_a_gated_league_shows_its_confident_calls(self):
+        for league in ("NOR", "SWE", "USA", "SC0"):
+            self.assertTrue(site_export.publishes({"league": league, "best_pick_prob": 0.65}), league)
+            self.assertTrue(site_export.publishes({"league": league, "best_pick_prob": 0.81}), league)
 
     def test_a_full_coverage_league_publishes_every_fixture(self):
-        for league in ("E0", "D1", "DNK", "RUS", "UCL", "BRA"):
-            self.assertTrue(site_export.publishes({"league": league, "best_pick_prob": 0.34}))
+        for league in ("E0", "D1", "DNK", "RUS", "UCL", "BRA", "SP1", "T1"):
+            self.assertTrue(site_export.publishes({"league": league, "best_pick_prob": 0.34}), league)
 
-    def test_a_thin_league_row_without_a_probability_is_never_published(self):
+    def test_the_gate_only_touches_the_competitions_it_names(self):
+        self.assertEqual(site_export.STRONG_PICKS_ONLY, {"NOR", "SWE", "USA", "SC0"})
+
+    def test_a_gated_league_row_without_a_probability_is_never_published(self):
         self.assertFalse(site_export.publishes({"league": "NOR"}))
 
 

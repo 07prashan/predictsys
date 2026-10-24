@@ -116,12 +116,12 @@ def league_rank(code: str) -> int:
 
 
 # Not every competition deserves a full fixture list. The leagues below are published only
-# when the model is confident: their top flights are thinner (fewer seasons behind the
-# ratings, a wider spread of team strength), so a full list is mostly coin flips - and a
-# page full of 40% tips is worse than a short list of the ones worth reading. Everything
-# they play still lands in the database and the track record; only the weak fixtures stay
-# off the page.
-STRONG_PICKS_ONLY = {"NOR", "SWE"}
+# when the model is confident: they were named as the "strong picks only" side of the site,
+# so a full list of every fixture - especially in the thinner top flights - would be mostly
+# coin flips, and a page full of 40% tips is worse than a short list of the ones worth
+# reading. Everything they play still lands in the database and the track record; only the
+# weak fixtures stay off the page.
+STRONG_PICKS_ONLY = {"NOR", "SWE", "USA", "SC0"}
 STRONG_PICK_MIN = 0.65
 
 
