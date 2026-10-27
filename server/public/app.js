@@ -18,8 +18,6 @@ const CATEGORIES = [
   { id: "atp", label: "Tennis · ATP" },
   { id: "wta", label: "Tennis · WTA" },
 ];
-const CATEGORY_ORDER = { leagues: 0, intl: 1, nba: 2, atp: 3, wta: 4 };
-
 // ---- Data: static JSON files written by predict.py (src/site_export.py) ----
 
 // Always revalidated: the files are replaced every few hours, and a stale copy would keep
@@ -377,9 +375,14 @@ function groupByCompetition(matches) {
     if (!groups.has(key)) groups.set(key, { competition: m.competition, group: m.country, category: m.category, matches: [] });
     groups.get(key).matches.push(m);
   }
+  // The card is read in stature order: the big leagues first in the published popularity
+  // order, then the smaller leagues whose clubs are in Europe, then the rest - and inside a
+  // smaller league, its European clubs' fixtures come before the rest of the card. Kickoff
+  // breaks every tie, so within a league (and inside the big leagues, where every fixture
+  // shares a rank) the day still reads chronologically.
   return [...groups.values()]
-    .map((g) => ({ ...g, matches: g.matches.sort(byKickoff) }))
-    .sort((a, b) => CATEGORY_ORDER[a.category] - CATEGORY_ORDER[b.category] || byKickoff(a.matches[0], b.matches[0]));
+    .map((g) => ({ ...g, matches: g.matches.sort(byStature) }))
+    .sort((a, b) => rankOf(a.matches[0]) - rankOf(b.matches[0]) || byKickoff(a.matches[0], b.matches[0]));
 }
 
 function competitionGroupHtml(g, opts) {
@@ -485,6 +488,14 @@ function leagueRank(code) {
   return i === -1 ? leagueOrder.length : i;
 }
 
+// One fixture's place in the order the page shows: the popularity of its competition, except
+// that in a smaller league the clubs contesting Europe come ahead of their domestic peers -
+// Slavia before Slovan, Copenhagen before the rest of the Danish card. The big leagues keep
+// their pure popularity order because nothing outside that block can reach their ranks.
+// A snapshot from before this field existed falls back to plain popularity.
+const rankOf = (m) => (typeof m.fixture_rank === "number" ? m.fixture_rank : leagueRank(m.league));
+const byStature = (a, b) => rankOf(a) - rankOf(b) || byKickoff(a, b);
+
 function groupByCountry(rows) {
   const byCountry = new Map();
   for (const row of rows) {
@@ -500,9 +511,9 @@ function groupByCountry(rows) {
   return [...byCountry.entries()]
     .map(([country, byComp]) => {
       const competitions = [...byComp.values()]
-        .map((c) => ({ ...c, matches: c.matches.sort(byKickoff) }))
-        .sort((a, b) => leagueRank(a.leagueCode) - leagueRank(b.leagueCode) || a.competition.localeCompare(b.competition));
-      return { country, competitions, rank: Math.min(...competitions.map((c) => leagueRank(c.leagueCode))) };
+        .map((c) => ({ ...c, matches: c.matches.sort(byStature) }))
+        .sort((a, b) => rankOf(a.matches[0]) - rankOf(b.matches[0]) || a.competition.localeCompare(b.competition));
+      return { country, competitions, rank: Math.min(...competitions.map((c) => rankOf(c.matches[0]))) };
     })
     .sort((a, b) => a.rank - b.rank || a.country.localeCompare(b.country));
 }

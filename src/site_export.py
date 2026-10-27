@@ -115,6 +115,34 @@ def league_rank(code: str) -> int:
     return LEAGUE_RANK.get(code, len(LEAGUE_POPULARITY))
 
 
+# The block a visitor can name without being told: Premier League, Champions League, La Liga,
+# Serie A, ... down to the Belgian Pro League - the head of LEAGUE_POPULARITY, up to the point
+# where that list switches to "the rest of Europe's top flights". Fixtures inside this block are
+# ordered by popularity alone, and nothing from outside it can jump ahead of the block.
+MAJOR_LEAGUES = set(LEAGUE_POPULARITY[:18])
+
+# UEFA's three club competitions. A club in one of them got there by finishing at the top of its
+# own league year after year and taking its European place - Slavia Prague, Zalgiris, Kairat,
+# Copenhagen - so among the smaller leagues, theirs are the fixtures worth showing first.
+UEFA_CLUB_COMPETITIONS = ("UCL", "UEL", "UECL")
+
+# How far a smaller league's ordinary fixtures sit behind the ones involving a club in Europe.
+# Larger than any popularity index, so the three groups - the majors, the European participants,
+# the rest - can never overlap no matter how many leagues are added later.
+OUT_OF_EUROPE_OFFSET = 100
+
+
+def fixture_rank(row: dict, european: set) -> int:
+    """Where one fixture sits in the order the page shows: its competition's popularity, except
+    that in a smaller league the clubs contesting Europe come ahead of the rest of that league
+    (and ahead of every smaller league with nobody in Europe). Lower sorts first."""
+    rank = league_rank(row["league"])
+    if row["league"] in MAJOR_LEAGUES:
+        return rank
+    in_europe = row.get("home_team") in european or row.get("away_team") in european
+    return rank if in_europe else rank + OUT_OF_EUROPE_OFFSET
+
+
 # Not every competition deserves a full fixture list. The leagues below are published only
 # when the model is confident: they were named as the "strong picks only" side of the site,
 # so a full list of every fixture - especially in the thinner top flights - would be mostly
@@ -199,6 +227,25 @@ def _query_table(conn: sqlite3.Connection, table: str, sql: str, params=()) -> l
     but no match history or ratings yet - that must give empty files, not a crash."""
     exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
     return _query(conn, sql, params) if exists else []
+
+
+def european_clubs(conn: sqlite3.Connection, now: dt.datetime) -> set:
+    """The clubs contesting UEFA's club competitions this season - the continental fixtures
+    stored under UCL/UEL/UECL since the season began in July. These are the sides that keep
+    finishing top of a smaller league and taking its European place, which is what the page's
+    fixture order uses them for. A database that has never held a continental fixture (a
+    clubs-only export, the very first run) simply returns an empty set."""
+    season = now.year if now.month >= 7 else now.year - 1
+    since = f"{season}-07-01"
+    marks = ",".join("?" for _ in UEFA_CLUB_COMPETITIONS)
+    rows = _query(
+        conn,
+        f"""SELECT home_team AS team FROM predictions WHERE league IN ({marks}) AND match_date >= ?
+            UNION
+            SELECT away_team FROM predictions WHERE league IN ({marks}) AND match_date >= ?""",
+        (*UEFA_CLUB_COMPETITIONS, since, *UEFA_CLUB_COMPETITIONS, since),
+    )
+    return {r["team"] for r in rows}
 
 
 class Logos:
@@ -402,6 +449,13 @@ def export_site(
     logos = Logos(conn)
     upcoming_rows = upcoming(conn, logos, now)
     history_rows = history(conn, logos)
+
+    # every fixture is tagged with where it belongs in the page's order - big leagues by
+    # popularity, smaller ones with their European clubs first (the rows stay in kickoff
+    # order; the page re-sorts on this)
+    european = european_clubs(conn, now)
+    for row in upcoming_rows:
+        row["fixture_rank"] = fixture_rank(row, european)
 
     # each team's next fixture, for the profile page
     next_fixtures = {}

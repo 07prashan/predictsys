@@ -246,5 +246,89 @@ class SiteExportTest(unittest.TestCase):
             self.assertEqual(json.loads((out / "scoreboard.json").read_text(encoding="utf-8")), [])
 
 
+class FixtureOrderTest(unittest.TestCase):
+    """What the page reads its card in: the big leagues in popularity order, then the smaller
+    leagues whose clubs are contesting Europe, then the rest (site_export.fixture_rank)."""
+
+    EUROPE = {"Slavia Prague", "FC Copenhagen", "Celtic"}
+
+    def rank(self, league, home, away="Nobody", europe=None):
+        return site_export.fixture_rank(
+            {"league": league, "home_team": home, "away_team": away},
+            self.EUROPE if europe is None else europe,
+        )
+
+    def test_the_major_block_is_the_head_of_the_popularity_order(self):
+        # the cut is where LEAGUE_POPULARITY switches from the leagues everyone can name to
+        # "the rest of Europe's top flights" - if the order is re-cut, this says so
+        self.assertEqual(site_export.MAJOR_LEAGUES, set(site_export.LEAGUE_POPULARITY[:18]))
+        self.assertEqual(site_export.LEAGUE_POPULARITY[18], "DNK")
+        # a major league's fixtures sit exactly at its popularity position
+        self.assertEqual((self.rank("E0", "Arsenal"), self.rank("SP1", "Real Madrid"), self.rank("UCL", "Real Madrid")), (0, 2, 1))
+
+    def test_a_bigger_league_always_comes_first(self):
+        smaller = [("DNK", "FC Copenhagen", "Lyngby"), ("JPN", "Gamba Osaka", "Kyoto"), ("SC1", "Mura", "Celje")]
+        for league, home, away in smaller:
+            self.assertLess(self.rank("B1", "Club Brugge", "Anderlecht"), self.rank(league, home, away), league)
+
+    def test_a_smaller_league_shows_its_european_clubs_before_the_rest(self):
+        self.assertLess(self.rank("DNK", "FC Copenhagen", "Midtjylland"), self.rank("DNK", "Vejle", "Silkeborg"))
+        # the lift is relative to its own league only - the league itself stays where it ranks
+        self.assertEqual(self.rank("DNK", "FC Copenhagen", "Midtjylland"), site_export.league_rank("DNK"))
+
+    def test_european_clubs_outrank_whole_leagues_with_nobody_in_europe(self):
+        self.assertLess(self.rank("DNK", "FC Copenhagen", "Midtjylland"), self.rank("JPN", "Gamba Osaka", "Kyoto"))
+        self.assertLess(self.rank("SC0", "Celtic", "Aberdeen"), self.rank("RUS", "Zenit", "Krasnodar"))
+
+    def test_with_nobody_in_europe_the_smaller_leagues_keep_their_popularity_order(self):
+        self.assertLess(self.rank("DNK", "Vejle", "Silkeborg", europe=set()), self.rank("JPN", "Gamba Osaka", "Kyoto", europe=set()))
+
+    def test_a_tennis_or_nba_fixture_never_rises_into_the_football(self):
+        self.assertLess(self.rank("SC1", "Mura", "Celje"), self.rank("NBA", "Dallas Mavericks", "Houston Rockets"))
+        self.assertLess(self.rank("CAFCC", "Club Africain", "RS Berkane"), self.rank("WTA", "Iga Swiatek", "Aryna Sabalenka"))
+
+
+class FixtureOrderExportTest(unittest.TestCase):
+    """The export tags every upcoming fixture with its place, and reads the European clubs
+    from this season's continental fixtures. Offline - throwaway database and output folder."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(storage, "DB_PATH", Path(tmp.name) / "order.db")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.conn = storage.connect()
+        self.addCleanup(self.conn.close)
+        self.out = Path(tmp.name) / "data"
+        save = lambda *rows: storage.save_predictions(self.conn, pd.DataFrame(list(rows)), predicted_at="2026-10-01T00:00:00")
+        save(
+            football_row(external_id="e:ucl", league="UCL", competition="UEFA Champions League", match_date="2026-10-05", kickoff_utc=pd.Timestamp("2026-10-05T19:00:00Z"), home_team="Slavia Prague", away_team="Real Madrid"),
+            football_row(external_id="e:ucl-old", league="UCL", competition="UEFA Champions League", match_date="2025-08-01", kickoff_utc=pd.Timestamp("2025-08-01T19:00:00Z"), home_team="Slavia Prague", away_team="Last Season Opponent"),
+            football_row(external_id="e:epl", league="E0", competition="Premier League", match_date="2026-10-04", kickoff_utc=pd.Timestamp("2026-10-04T15:00:00Z"), home_team="Arsenal", away_team="Chelsea"),
+            football_row(external_id="e:den-europe", league="DNK", competition="Superliga", match_date="2026-10-06", kickoff_utc=pd.Timestamp("2026-10-06T17:00:00Z"), home_team="FC Copenhagen", away_team="Lyngby"),
+            football_row(external_id="e:den-plain", league="DNK", competition="Superliga", match_date="2026-10-06", kickoff_utc=pd.Timestamp("2026-10-06T19:00:00Z"), home_team="Vejle", away_team="Silkeborg"),
+            football_row(external_id="e:jpn", league="JPN", competition="J1 League", match_date="2026-10-07", kickoff_utc=pd.Timestamp("2026-10-07T10:00:00Z"), home_team="Gamba Osaka", away_team="Kyoto"),
+        )
+        self.stats = site_export.export_site(self.conn, self.out, now=NOW)
+
+    def rows(self):
+        return json.loads((self.out / "predictions.json").read_text(encoding="utf-8"))["rows"]
+
+    def test_every_upcoming_fixture_carries_its_place_in_the_order(self):
+        self.assertEqual(self.stats["upcoming"], 5)  # the sixth row is last season's, already played
+        self.assertTrue(all(isinstance(row.get("fixture_rank"), int) for row in self.rows()))
+
+    def test_the_card_reads_big_league_then_europeans_then_the_rest(self):
+        ordered = sorted(self.rows(), key=lambda row: (row["fixture_rank"], row["kickoff_utc"]))
+        self.assertEqual(
+            [row["home_team"] for row in ordered],
+            ["Arsenal", "Slavia Prague", "FC Copenhagen", "Vejle", "Gamba Osaka"],
+        )
+
+    def test_the_european_clubs_are_this_season_continental_fixtures(self):
+        self.assertEqual(site_export.european_clubs(self.conn, NOW), {"Slavia Prague", "Real Madrid"})
+
+
 if __name__ == "__main__":
     unittest.main()
