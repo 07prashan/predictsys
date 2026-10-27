@@ -7,6 +7,11 @@ on:
   schedule:
     - cron: "17 */2 * * *"  # every 2 hours: a LIGHT run - national teams, tennis, settling finished matches
     - cron: "41 5,17 * * *" # twice a day: a FULL run - also refetches results and refits the club-league models
+  push:
+    branches: [main] # publish a code change as soon as it lands (light mode: ~2 min),
+    # instead of leaving it invisible until the next scheduled run. The keepalive commit
+    # below can't loop: it only fires when the newest commit is 30 days old, and its own
+    # push makes that false.
   workflow_dispatch:
     inputs:
       mode:

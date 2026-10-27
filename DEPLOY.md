@@ -57,8 +57,9 @@ The live address is `https://<your-github-username>.github.io/predictsys/`, and 
 
 ## What runs when
 
-| Schedule | Mode | Does |
+| When | Mode | Does |
 |---|---|---|
+| every push to `main` | light | publishes the code change to Pages and Vercel (~2 min) |
 | every 2 hours | light | national teams, tennis, grading finished matches (~2 min) |
 | 05:41 and 17:41 UTC | full | everything, including refitting the club-league models (~10 min) |
 
