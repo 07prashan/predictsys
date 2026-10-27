@@ -64,6 +64,11 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       PYTHONIOENCODING: utf-8
+      # Optional second host: the same static folder is pushed to Vercel after Pages.
+      # Missing secrets are noticed below instead of failing the run.
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
     steps:
       - uses: actions/checkout@v7
 
@@ -146,6 +151,17 @@ jobs:
         id: deployment
         if: ${{ !cancelled() && steps.sitecheck.outcome == 'success' }}
         uses: actions/deploy-pages@v5
+
+      # The second copy of the same files, so the site exists at predictsys.vercel.app too.
+      # The data folder is gitignored (it is generated), so Vercel gets it from here rather
+      # than from a git push - a git-connected Vercel project would deploy a site with no data.
+      - name: Deploy the website to Vercel
+        if: ${{ !cancelled() && steps.sitecheck.outcome == 'success' && env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
+        run: npx --yes vercel@latest deploy server/public --prod --yes --token "$VERCEL_TOKEN"
+
+      - name: Say so if the Vercel secrets are missing
+        if: ${{ env.VERCEL_TOKEN == '' }}
+        run: echo "::notice::Predictions refreshed and published to GitHub Pages, but not to Vercel - add VERCEL_TOKEN, VERCEL_ORG_ID and VERCEL_PROJECT_ID (see DEPLOY.md)."
 
       - name: Fail the run if something part-way broke
         if: ${{ steps.pipeline.outcome == 'failure' || steps.keepalive.outcome == 'failure' }}

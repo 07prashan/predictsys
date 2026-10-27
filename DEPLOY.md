@@ -5,7 +5,8 @@ The whole thing runs on GitHub: no server, no third-party account, and nothing t
 ## How it fits together
 
 - **The website is static files** (`server/public/`): HTML, JS, CSS, plus JSON snapshots in
-  `server/public/data/`. It is published to **GitHub Pages**.
+  `server/public/data/`. It is published to **GitHub Pages**, and the same folder is pushed to
+  **Vercel** as a second copy, so both addresses serve identical files.
 - **The pipeline** (`src/predict.py`: models, ESPN, the SQLite database) runs on **GitHub Actions**
   on a schedule, and every run ends by publishing fresh files to Pages. The laptop never has to be on.
 - **The database** (your accumulated track record) is kept between runs as an asset on a GitHub
@@ -15,7 +16,8 @@ The whole thing runs on GitHub: no server, no third-party account, and nothing t
   handled by `scripts/keepalive.sh`, which every run starts with: if the newest commit is more than
   30 days old, it adds an empty one.
 
-The live address is `https://<your-github-username>.github.io/predictsys/`.
+The live address is `https://<your-github-username>.github.io/predictsys/`, and the same site is at
+`https://predictsys.vercel.app` once the Vercel secrets below exist.
 
 ## One-time setup (about 15 minutes)
 
@@ -42,6 +44,16 @@ The live address is `https://<your-github-username>.github.io/predictsys/`.
 6. **Run it once:** Actions -> *Refresh predictions* -> Run workflow -> `full`. The first run takes
    ~15 minutes (it downloads the history). The finished run shows the site's address; after that it
    runs by itself.
+7. **Vercel (optional, the second host):** add three repository secrets
+   (Settings -> Secrets and variables -> Actions):
+   - `VERCEL_TOKEN` - a token from https://vercel.com/account/tokens
+   - `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` - the `orgId` and `projectId` in
+     `server/public/.vercel/project.json`. That file is written by `npx vercel link` run inside
+     `server/public` on your own machine (it is gitignored, which is why the values are pasted into
+     secrets rather than committed).
+
+   Every run then deploys the freshly generated folder to Vercel as well as Pages. With the secrets
+   missing nothing breaks: Pages still publishes and the run just notes that Vercel was skipped.
 
 ## What runs when
 
@@ -78,8 +90,11 @@ late when it is busy; that is normal and harmless at this cadence.
 - **Club xG data** is scraped from Understat, which may refuse requests from GitHub's servers. That
   is survivable: a failed refresh falls back to the cached copy (kept on the `state` release), and
   the other sports are unaffected.
-- **An old Vercel deployment** (`predictsys.vercel.app`) is no longer updated by anything here. Delete
-  the project in Vercel's dashboard, or leave it - nothing in this repo touches it.
+- **Deploying Vercel by hand:** `cd server/public && npx vercel@latest deploy --prod --yes` (use
+  `@latest` - an old global Vercel CLI is rejected by Vercel's API). Run `python src/predict.py`
+  first so the data folder is current. A project connected to the *git repo* on Vercel would serve a
+  site with no data at all, because `server/public/data/` is generated and gitignored - always deploy
+  the folder, not the repo.
 - **Another host?** Publish the `server/public` folder to any static host and swap the last two
   steps of the workflow.
 - **Always-on box instead?** The `Dockerfile` runs the pipeline on a loop and serves the site from
