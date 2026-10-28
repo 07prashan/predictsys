@@ -1132,6 +1132,8 @@ function slipLegHtml(leg) {
       <span class="slip-leg-match">${esc(leg.home_team)}<span class="vs">vs</span>${esc(leg.away_team)}</span>
       <span class="slip-leg-pick">${esc(leg.label)}</span>
       <span class="slip-leg-odds ${live ? "live" : "model"}" title="${live ? "Price from the 1xLite betting app" : "Model's fair price (1 / probability)"}">${leg.odds.toFixed(2)}</span>
+      ${leg.insight ? `<span class="slip-leg-why">${esc(leg.insight)}</span>` : ""}
+      ${leg.note ? `<span class="slip-leg-note">Your view: ${esc(leg.note)}</span>` : ""}
     </li>`;
 }
 
@@ -1140,11 +1142,11 @@ function slipLegHtml(leg) {
 function slipCardHtml(slip, index, title, extraClass = "") {
   const legs = slip.legs.length;
   return `
-    <article class="slip-card ${extraClass}">
+    <article class="slip-card ${extraClass}${slip.edited ? " edited" : ""}">
       <div class="slip-head">
         <div class="slip-head-text">
           <span class="slip-name">${title}</span>
-          <span class="slip-meta">${legs} ${legs === 1 ? "leg" : "legs"} &middot; win chance ${pct(slip.win_prob)}${slip.window ? ` &middot; ${esc(slip.window)}` : ""}</span>
+          <span class="slip-meta">${legs} ${legs === 1 ? "leg" : "legs"} &middot; win chance ${pct(slip.win_prob)}${slip.window ? ` &middot; ${esc(slip.window)}` : ""}${slip.edited ? ` &middot; <b>edited by you</b>` : ""}</span>
         </div>
         <div class="slip-total">
           <span class="slip-total-label">Total odds</span>
@@ -1153,6 +1155,7 @@ function slipCardHtml(slip, index, title, extraClass = "") {
       </div>
       <ol class="slip-legs">${slip.legs.map(slipLegHtml).join("")}</ol>
       ${slipActionsHtml(slip, index)}
+      ${slipEditorHtml(slip, index)}
     </article>`;
 }
 
@@ -1257,7 +1260,10 @@ function slipPlainText(slip) {
   const name = slip.kind === "main" ? "Main slip" : "Accumulator";
   const lines = slip.legs.map((leg, i) => {
     const when = formatSlipKickoff(leg.kickoff_utc);
-    return `${i + 1}. ${leg.home_team} vs ${leg.away_team} - ${leg.label} @ ${leg.odds.toFixed(2)}${when ? ` (${when})` : ""}`;
+    const line = `${i + 1}. ${leg.home_team} vs ${leg.away_team} - ${leg.label} @ ${leg.odds.toFixed(2)}${when ? ` (${when})` : ""}`;
+    const why = leg.insight ? `\n   Why: ${leg.insight}` : "";
+    const view = leg.note ? `\n   View: ${leg.note}` : "";
+    return `${line}${why}${view}`;
   });
   return [
     `PredictSys slip - ${name}${slip.window ? ` (${slip.window})` : ""}${slip.code ? ` - slip code ${slip.code}` : ""}`,
@@ -1269,17 +1275,288 @@ function slipPlainText(slip) {
 }
 
 function slipActionsHtml(slip, index) {
+  const editable = Boolean(slip.code) && poolSize() > 0;
+  const open = Boolean(slip.code) && openSlipEditors.has(slip.code);
   return `
       <div class="slip-actions">
         <span class="slip-code-now" title="Type this code in the box above to open this slip on any device">
           <span class="slip-code-label">Slip code</span>
           <code class="slip-code-value">${esc(slip.code || "\u00b7\u00b7\u00b7\u00b7\u00b7")}</code>
         </span>
+        ${editable ? `<button class="slip-action${open ? " done" : ""}" data-edit-action="toggle" data-slip-idx="${index}" aria-expanded="${open}">${open ? "Close editor" : "Change slip"}</button>` : ""}
         <button class="slip-action" data-slip-action="copy-code" data-slip-idx="${index}" title="Copy this slip's code">Copy code</button>
         <button class="slip-action" data-slip-action="save" data-slip-idx="${index}" title="Keep this slip on this device">Save slip</button>
         <button class="slip-action" data-slip-action="copy-text" data-slip-idx="${index}" title="Copy the picks as text to add in the 1xBet bet slip">Copy picks for 1xBet</button>
-        ${slip === loadedSlip ? `<button class="slip-action" data-slip-action="close" aria-label="Close the loaded slip">&times;</button>` : ""}
+        ${slip.isLoaded ? `<button class="slip-action" data-slip-action="close" aria-label="Close the loaded slip">&times;</button>` : ""}
       </div>`;
+}
+
+// ---- Changing a slip: swap fixtures, switch the market, keep your own view ----
+//
+// slips.json ships a `pool`: every fixture the window can draw from, with its whole board of
+// markets and one reason-line per market shelf. The editor under a slip rewrites that slip
+// from the pool - take a fixture off, add another, switch the bookmaker market, write your
+// own view on the game - and the result is kept on this device (localStorage) under the
+// slip's five-character code, so a rebuilt feed never wipes an edited slip. Only the totals
+// are recomputed here: odds multiply, win chances multiply.
+
+const SLIP_EDITS_KEY = "predictsys.slip_edits";
+const openSlipEditors = new Set();
+
+function poolIndex() {
+  const map = new Map();
+  for (const entry of (slipsData && slipsData.pool) || []) map.set(entry.match_key, entry);
+  return map;
+}
+
+function poolSize() {
+  return ((slipsData && slipsData.pool) || []).length;
+}
+
+function readSlipEdits() {
+  try {
+    const map = JSON.parse(localStorage.getItem(SLIP_EDITS_KEY) || "{}");
+    return map && typeof map === "object" && !Array.isArray(map) ? map : {};
+  } catch (err) {
+    return {};
+  }
+}
+
+function writeSlipEdits(map) {
+  try {
+    localStorage.setItem(SLIP_EDITS_KEY, JSON.stringify(map));
+  } catch (err) {
+    // storage blocked or full - the edit lives for this render only
+  }
+}
+
+// The fixture's own first choice when it is added to a slip: the board ships in shelf order,
+// and the model's safest in-band market is what "Add" puts on the slip.
+function bestMarketCode(entry) {
+  const markets = entry.markets || [];
+  const pick = markets.find((m) => m.prob >= 0.7) || markets[0];
+  return pick ? pick.code : "";
+}
+
+// One saved {match, selection, note} back into a slip leg, priced from the pool entry.
+function legFromPool(editLeg, entry) {
+  if (!entry) return null; // the fixture has left the feed - this leg is simply dropped
+  const markets = entry.markets || [];
+  const market = markets.find((m) => m.code === editLeg.s)
+    || markets.find((m) => m.code === bestMarketCode(entry));
+  if (!market) return null;
+  return {
+    match_key: entry.match_key,
+    league: entry.league,
+    competition: entry.competition,
+    sport: entry.sport,
+    kickoff_utc: entry.kickoff_utc,
+    home_team: entry.home_team,
+    away_team: entry.away_team,
+    home_logo: entry.home_logo,
+    away_logo: entry.away_logo,
+    selection: market.code,
+    market: market.market,
+    label: market.label,
+    group: market.group,
+    prob: market.prob,
+    odds: market.odds,
+    odds_source: market.odds_source,
+    insight: (entry.insights || {})[market.group] || "",
+    note: editLeg.note || "",
+  };
+}
+
+// The published slip with this device's edits applied - a copy, so the feed's own object is
+// never mutated and "Reset" is always one delete away.
+function applySlipEdit(slip) {
+  const out = { ...slip, isLoaded: slip === loadedSlip };
+  const edit = slip.code ? readSlipEdits()[slip.code] : null;
+  if (!edit || !Array.isArray(edit.legs) || !edit.legs.length) return out;
+  const index = poolIndex();
+  const legs = edit.legs.map((leg) => legFromPool(leg, index.get(leg.m))).filter(Boolean);
+  if (!legs.length) return out;
+  const total = legs.reduce((product, leg) => product * (Number(leg.odds) || 1), 1);
+  const winProb = legs.reduce((product, leg) => product * (Number(leg.prob) || 0), 1);
+  out.legs = legs;
+  out.total_odds = Math.round(total * 100) / 100;
+  out.win_prob = Math.round(winProb * 10000) / 10000;
+  out.edited = true;
+  return out;
+}
+
+// The current legs of a slip as the editor stores them (whatever the render is showing).
+function currentEditLegs(slip) {
+  const existing = slip.code ? readSlipEdits()[slip.code] : null;
+  if (existing && Array.isArray(existing.legs)) return existing.legs;
+  return slip.legs.map((leg) => ({ m: leg.match_key, s: leg.selection, note: leg.note || "" }));
+}
+
+function saveSlipLegs(slip, legs) {
+  if (!slip.code) return;
+  const map = readSlipEdits();
+  if (legs.length) map[slip.code] = { legs, updated_at: new Date().toISOString() };
+  else delete map[slip.code]; // back to the published slip
+  writeSlipEdits(map);
+}
+
+function editorLegHtml(leg, idx, index) {
+  const entry = index.get(leg.match_key);
+  const markets = entry ? entry.markets || [] : [];
+  const insight = entry ? (entry.insights || {})[leg.group] || leg.insight : leg.insight;
+  const options = markets.length
+    ? markets.map((m) => `<option value="${esc(m.code)}"${m.code === leg.selection ? " selected" : ""}>${esc(m.market)} &middot; ${esc(m.label)} @ ${m.odds.toFixed(2)}</option>`).join("")
+    : `<option selected>${esc(leg.label)} @ ${Number(leg.odds).toFixed(2)} (fixture no longer in the feed)</option>`;
+  return `
+      <li class="editor-leg">
+        <div class="editor-leg-top">
+          <span class="editor-leg-match">${esc(leg.home_team)}<span class="vs">vs</span>${esc(leg.away_team)}</span>
+          <button class="editor-remove" data-edit-action="remove" data-leg-idx="${idx}" title="Take this fixture off the slip" aria-label="Remove ${esc(leg.home_team)} against ${esc(leg.away_team)}">&times;</button>
+        </div>
+        <select class="editor-market" data-edit-action="market" data-leg-idx="${idx}" aria-label="Bookmaker market for this fixture">${options}</select>
+        <input class="editor-note" type="text" maxlength="240" placeholder="Your view on this game (kept on this device)" value="${esc(leg.note || "")}" data-edit-action="note" data-leg-idx="${idx}">
+        <p class="editor-insight">${esc(insight || "")}</p>
+      </li>`;
+}
+
+function candidateHtml(entry, index) {
+  const text = `${entry.home_team} ${entry.away_team} ${entry.competition || entry.league || ""}`.toLowerCase();
+  const best = (entry.markets || [])[0];
+  return `
+      <li class="editor-candidate" data-candidate="${esc(text)}">
+        <span class="candidate-when">${esc(formatSlipKickoff(entry.kickoff_utc))}</span>
+        <span class="candidate-match">${esc(entry.home_team)}<span class="vs">vs</span>${esc(entry.away_team)}</span>
+        <span class="candidate-league">${esc(entry.competition || entry.league)}</span>
+        <span class="candidate-pick">${best ? `${esc(best.label)} @ ${best.odds.toFixed(2)}` : ""}</span>
+        <button class="slip-action" data-edit-action="add" data-entry-key="${esc(entry.match_key)}">Add</button>
+      </li>`;
+}
+
+function slipEditorHtml(slip, index) {
+  const open = Boolean(slip.code) && openSlipEditors.has(slip.code);
+  // built only while open - a closed card renders its action bar and nothing else, so a
+  // page of six slips does not carry six hidden candidate lists around
+  if (!open || !slip.code || !poolSize()) return "";
+  const entries = poolIndex();
+  // only fixtures inside this slip's own window can be swapped in
+  const windowEntry = ((slipsData && slipsData.filters) || []).find((f) => f.label === slip.window);
+  const start = windowEntry ? Date.parse(windowEntry.start_utc) : -Infinity;
+  const end = windowEntry ? Date.parse(windowEntry.end_utc) : Infinity;
+  const chosen = new Set(slip.legs.map((leg) => leg.match_key));
+  const candidates = ((slipsData && slipsData.pool) || []).filter((entry) => {
+    const when = Date.parse(entry.kickoff_utc);
+    return !chosen.has(entry.match_key) && when >= start && when < end;
+  });
+  const shown = candidates.slice(0, 30);
+  return `
+    <div class="slip-editor" data-editor-for="${esc(slip.code)}"${open ? "" : " hidden"}>
+      <div class="slip-editor-head">
+        <span class="slip-editor-title">Change this slip</span>
+        <span class="slip-editor-total">Total <b>${Number(slip.total_odds).toFixed(2)}</b> &middot; win chance ${pct(slip.win_prob)}</span>
+      </div>
+      <ul class="editor-legs">${slip.legs.map((leg, i) => editorLegHtml(leg, i, entries)).join("")}</ul>
+      <div class="editor-add">
+        <label class="sr-only" for="editor-search-${esc(slip.code)}">Search fixtures to add</label>
+        <input id="editor-search-${esc(slip.code)}" class="editor-search" type="search" placeholder="Search a team or league to add a fixture" data-editor-search="${esc(slip.code)}" autocomplete="off">
+        <ul class="editor-candidates" data-candidates="${esc(slip.code)}">
+          ${shown.map((entry) => candidateHtml(entry, entries)).join("")}
+          ${candidates.length > shown.length ? `<li class="editor-more">${candidates.length - shown.length} more fixtures in this window - search above to narrow it down.</li>` : ""}
+          ${!candidates.length ? `<li class="editor-more">Every fixture in this window is already on the slip.</li>` : ""}
+        </ul>
+      </div>
+      <div class="slip-editor-foot">
+        <button class="slip-action danger" data-edit-action="reset" data-slip-idx="${index}">Reset to the original slip</button>
+        <span class="slip-editor-hint">Add or remove fixtures, switch the market, or write your own view - it stays on this device.</span>
+      </div>
+    </div>`;
+}
+
+function setUpSlipEditor() {
+  const panel = document.getElementById("slips");
+
+  panel.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-edit-action]");
+    if (!btn) return;
+    const action = btn.dataset.editAction;
+    // actions inside the editor carry no slip index of their own - their card is the slip
+    const slip = renderedSlips[Number(btn.dataset.slipIdx)] || renderedSlips[slipIndexOf(btn)];
+
+    if (action === "toggle" && slip) {
+      if (openSlipEditors.has(slip.code)) openSlipEditors.delete(slip.code);
+      else openSlipEditors.add(slip.code);
+      renderSlips();
+      return;
+    }
+    if (action === "reset" && slip) {
+      const map = readSlipEdits();
+      delete map[slip.code];
+      writeSlipEdits(map);
+      renderSlips();
+      return;
+    }
+    if (action === "remove" && slip) {
+      const legs = currentEditLegs(slip);
+      legs.splice(Number(btn.dataset.legIdx), 1);
+      saveSlipLegs(slip, legs);
+      renderSlips();
+      return;
+    }
+    if (action === "add" && slip) {
+      const entry = poolIndex().get(btn.dataset.entryKey);
+      if (!entry) return;
+      const legs = currentEditLegs(slip);
+      if (legs.some((leg) => leg.m === entry.match_key)) return;
+      legs.push({ m: entry.match_key, s: bestMarketCode(entry), note: "" });
+      saveSlipLegs(slip, legs);
+      renderSlips();
+      return;
+    }
+    // the search box only narrows the list already on screen - no re-render, so the caret
+    // never jumps while a team name is being typed
+  });
+
+  panel.addEventListener("change", (e) => {
+    const select = e.target.closest('[data-edit-action="market"]');
+    if (!select) return;
+    const slip = renderedSlips[slipIndexOf(select)];
+    if (!slip) return;
+    const legs = currentEditLegs(slip);
+    const idx = Number(select.dataset.legIdx);
+    if (!legs[idx]) return;
+    legs[idx] = { ...legs[idx], s: select.value };
+    saveSlipLegs(slip, legs);
+    renderSlips();
+  });
+
+  panel.addEventListener("input", (e) => {
+    const note = e.target.closest('[data-edit-action="note"]');
+    if (note) {
+      const slip = renderedSlips[slipIndexOf(note)];
+      if (!slip) return;
+      const legs = currentEditLegs(slip);
+      const idx = Number(note.dataset.legIdx);
+      if (!legs[idx]) return;
+      legs[idx] = { ...legs[idx], note: note.value };
+      saveSlipLegs(slip, legs);
+      return;
+    }
+    const search = e.target.closest("[data-editor-search]");
+    if (!search) return;
+    const query = search.value.trim().toLowerCase();
+    const list = document.querySelector(`[data-candidates="${CSS.escape(search.dataset.editorSearch)}"]`);
+    if (!list) return;
+    for (const item of list.querySelectorAll(".editor-candidate")) {
+      item.hidden = Boolean(query) && !item.dataset.candidate.includes(query);
+    }
+  });
+}
+
+// The editor controls live inside a slip card, so their nearest card is the slip they edit.
+function slipIndexOf(node) {
+  const card = node.closest(".slip-card");
+  if (!card) return -1;
+  const cards = [...document.querySelectorAll("#slips-content .slip-card")];
+  return cards.indexOf(card);
 }
 
 function readSavedSlips() {
@@ -1483,9 +1760,14 @@ function renderSlips() {
 
   const active = filters.find((f) => f.id === slipFilter);
   // A slip opened by code is shown once, at the top - not a second time in its own window.
-  const main = active.main_slip === loadedSlip ? null : active.main_slip;
-  const combos = active.slips.filter((s) => s !== loadedSlip);
-  renderedSlips = [...(loadedSlip ? [loadedSlip] : []), ...(main ? [main] : []), ...combos];
+  const rawMain = active.main_slip === loadedSlip ? null : active.main_slip;
+  const rawCombos = active.slips.filter((s) => s !== loadedSlip);
+  // every card is rendered with this device's edits applied - swapped fixtures, switched
+  // markets, its own notes - and the totals recomputed from what is actually on the slip
+  const loaded = loadedSlip ? applySlipEdit(loadedSlip) : null;
+  const main = rawMain ? applySlipEdit(rawMain) : null;
+  const combos = rawCombos.map(applySlipEdit);
+  renderedSlips = [...(loaded ? [loaded] : []), ...(main ? [main] : []), ...combos];
   const legs = renderedSlips.reduce((n, slip) => n + slip.legs.length, 0);
   const liveLegs = renderedSlips.reduce((n, slip) => n + slip.legs.filter((l) => l.odds_source === "1xlite").length, 0);
   const note = legs
@@ -1493,13 +1775,13 @@ function renderSlips() {
     : `Day window ${formatSlipDate(active.start_utc)} to ${formatSlipDate(active.end_utc)} (Kathmandu time).`;
   const card = (slip, title, cls = "") => slipCardHtml(slip, renderedSlips.indexOf(slip), title, cls);
   const top = [
-    loadedSlip ? card(loadedSlip, `Loaded slip <span class="slip-badge">Loaded</span>`, "loaded") : "",
+    loaded ? card(loaded, `Loaded slip <span class="slip-badge">Loaded</span>`, "loaded") : "",
     main ? card(main, `Main slip <span class="slip-badge">Best bet</span>`, "main") : "",
   ].join("");
   const grid = combos.map((s, i) => card(s, `Slip ${i + 1}`)).join("");
   content.innerHTML = `
     <h2 class="day-heading">Prediction slips <span class="day-total">${esc(active.label)}</span></h2>
-    <p class="view-note"><b>Main slip:</b> our surest picks, every leg priced 1.10&ndash;1.30, totalling 2.00&ndash;3.50. <b>Combination slips:</b> the model's most confident pick per match priced 1.10&ndash;1.40, totalling 2.00&ndash;4.50. ${esc(note)}</p>
+    <p class="view-note"><b>Main slip:</b> our surest picks, every leg rated at least 75% likely and priced 1.10&ndash;1.30, totalling 2.00&ndash;3.50. <b>Combination slips:</b> up to 5 of them, every leg rated at least 70% likely, each totalling 2.00&ndash;3.00 - and when the window holds no fixture that strong, a slip is left unbuilt rather than padded with a weaker pick. Every leg carries the reason it was chosen; <b>Change slip</b> lets you swap fixtures, switch the bookmaker market and write your own view. ${esc(note)}</p>
     ${
       renderedSlips.length
         ? `${top ? `<div class="slip-main">${top}</div>` : ""}${grid ? `<div class="slip-grid">${grid}</div>` : ""}`
@@ -1537,6 +1819,7 @@ setUpFilters();
 setUpCountryDateSelects();
 setUpSlipFilters();
 setUpSlipCodes();
+setUpSlipEditor();
 setUpAutoRefresh();
 loadUpcoming();
 loadSlips();

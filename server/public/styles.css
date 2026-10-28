@@ -1022,6 +1022,105 @@ footer a { color: var(--teal); }
 .slip-code-value.small { font-size: 0.82rem; letter-spacing: 0.06em; }
 .slip-card.loaded { border-color: color-mix(in srgb, var(--teal) 55%, var(--border)); }
 .slip-card.loaded .slip-head { background: var(--teal-soft); }
+/* An edited slip is visibly not the published one anymore */
+.slip-card.edited { border-style: dashed; }
+.slip-card.edited .slip-head { background: var(--surface-alt); }
+
+/* Why this leg is on the slip, and this device's own view on the game */
+.slip-leg-why {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+  border-left: 2px solid color-mix(in srgb, var(--teal) 40%, transparent);
+  padding-left: 9px;
+}
+.slip-leg-note {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  background: var(--surface-alt);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 5px 9px;
+}
+
+/* ---- Slip editor: swap fixtures, switch the market, write your own view ---- */
+.slip-editor {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  margin-top: 10px;
+  padding-top: 12px;
+}
+.slip-editor-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.slip-editor-title { font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+.slip-editor-total { font-size: 0.78rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.slip-editor-total b { color: var(--teal); font-size: 1rem; }
+.editor-legs { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.editor-leg {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--surface);
+}
+.editor-leg-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.editor-leg-match { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; font-weight: 600; min-width: 0; }
+.editor-leg-match .vs { font-size: 0.66rem; color: var(--text-muted); font-weight: 400; text-transform: uppercase; }
+.editor-remove {
+  width: 26px;
+  height: 26px;
+  line-height: 1;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 1rem;
+  cursor: pointer;
+}
+.editor-remove:hover { color: var(--incorrect); border-color: var(--incorrect); }
+.editor-market, .editor-note, .editor-search {
+  width: 100%;
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+.editor-market:focus, .editor-note:focus, .editor-search:focus {
+  outline: 2px solid color-mix(in srgb, var(--teal) 45%, transparent);
+  outline-offset: 1px;
+}
+.editor-insight { margin: 0; font-size: 0.74rem; line-height: 1.5; color: var(--text-muted); }
+.editor-add { display: grid; gap: 8px; }
+.editor-candidates { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 270px; overflow-y: auto; }
+.editor-candidate {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas: "when match add" "league pick add";
+  align-items: center;
+  gap: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 7px 9px;
+  background: var(--surface);
+}
+.editor-candidate[hidden] { display: none; }
+.candidate-when { grid-area: when; font-size: 0.7rem; color: var(--text-muted); white-space: nowrap; }
+.candidate-match { grid-area: match; display: flex; align-items: center; gap: 5px; font-size: 0.84rem; font-weight: 600; min-width: 0; }
+.candidate-match .vs { font-size: 0.66rem; color: var(--text-muted); font-weight: 400; text-transform: uppercase; }
+.candidate-league { grid-area: league; font-size: 0.68rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.candidate-pick { grid-area: pick; font-size: 0.74rem; color: var(--teal); font-weight: 600; }
+.editor-candidate .slip-action { grid-area: add; }
+.editor-more { font-size: 0.76rem; color: var(--text-muted); padding: 6px 2px; }
+.slip-editor-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.slip-editor-hint { font-size: 0.74rem; color: var(--text-muted); }
 
 .saved-slips-title { font-size: 0.95rem; margin: 20px 0 2px; }
 .saved-slips-count { color: var(--teal); font-variant-numeric: tabular-nums; }

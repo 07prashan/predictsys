@@ -419,6 +419,310 @@ class TopTierOnlyTest(unittest.TestCase):
             self.assertNotIn("SP2", {leg["league"] for leg in slip["legs"]})
 
 
+class BoardTest(unittest.TestCase):
+    """The bookmaker board: every market the model can honestly price for one fixture, per
+    sport - what the page's slip editor offers when you switch a leg's market."""
+
+    def codes(self, row, prices=None):
+        return {entry["code"]: entry for entry in slips.board(row, prices)}
+
+    def test_a_football_row_prices_the_stored_board_and_the_derived_one(self):
+        row = football_row(0, expected_goals_home=2.1, expected_goals_away=0.8)
+        codes = self.codes(row)
+        # the stored board the pipeline already computes...
+        for code in ("1", "X", "2", "1X", "12", "X2", "O1.5", "O2.5", "U3.5", "BTTS", "BTTS_NO"):
+            self.assertIn(code, codes)
+        # ...and the markets derived from this row's expected goals
+        for code in ("O0.5", "EX2", "EX3", "T1O1.5", "T2O1.5", "T1E2", "AH1", "AH2", "1+O2.5", "2+O2.5"):
+            self.assertIn(code, codes)
+        # every selection carries what the editor and the card show
+        for entry in codes.values():
+            self.assertTrue({"code", "market", "label", "group", "prob", "odds", "odds_source"} <= set(entry))
+            self.assertGreater(entry["prob"], 0)
+            self.assertLess(entry["prob"], 1)
+
+    def test_a_row_without_expected_goals_still_prices_the_stored_board(self):
+        codes = self.codes(football_row(0))
+        self.assertIn("O2.5", codes)
+        self.assertNotIn("AH1", codes)  # nothing is derived from a column the row doesn't have
+
+    def test_derived_probabilities_behave_like_a_goal_model(self):
+        probs = slips.derived_probabilities(football_row(0, expected_goals_home=1.4, expected_goals_away=1.1))
+        self.assertAlmostEqual(probs["O0.5"] + probs["U0.5"], 1.0, places=6)
+        self.assertGreater(probs["O1.5"], probs["O2.5"])
+        self.assertGreater(probs["O2.5"], probs["O3.5"])
+        self.assertGreater(probs["O3.5"], probs["O4.5"])
+        self.assertGreater(probs["T1O1.5"], probs["T2O1.5"])  # the home side is the stronger one
+        self.assertLess(probs["AH1"] + probs["AH2"], 1.0)
+        self.assertGreater(probs["EX2"] + probs["EX3"], 0.3)
+        self.assertGreater(probs["1+O2.5"], probs["2+O2.5"])
+
+    def test_basketball_prices_its_moneyline_and_the_one_total_it_models(self):
+        row = {"league": "NBA", "sport": "basketball", "competition": "NBA Preseason",
+               "home_team": "Dallas Mavericks", "away_team": "Houston Rockets",
+               "prob_home": 0.72, "prob_draw": 0.0, "prob_away": 0.28,
+               "total_line": 224.5, "over_prob": 0.55, "under_prob": 0.45}
+        codes = self.codes(row)
+        self.assertEqual(codes["1"]["prob"], 0.72)
+        self.assertEqual(codes["1"]["label"], "Dallas Mavericks to Win")
+        self.assertEqual(codes["O224.5"]["prob"], 0.55)
+        self.assertEqual(codes["U224.5"]["prob"], 0.45)
+        self.assertEqual(codes["O224.5"]["market"], "Total Points")
+
+    def test_every_sport_names_its_shelves_the_way_its_own_page_does(self):
+        basketball = {"league": "NBA", "sport": "basketball", "home_team": "Dallas Mavericks",
+                      "away_team": "Houston Rockets", "prob_home": 0.72, "prob_draw": 0.0,
+                      "prob_away": 0.28, "total_line": 224.5, "over_prob": 0.55, "under_prob": 0.45}
+        codes = self.codes(basketball)
+        self.assertEqual(codes["1"]["group"], "Moneyline")        # not football's "Result"
+        self.assertEqual(codes["O224.5"]["group"], "Total Points")  # not the unnamed "Markets"
+        tennis = {"league": "ATP", "sport": "tennis", "home_team": "Carlos Alcaraz",
+                  "away_team": "Matteo Arnaldi", "prob_home": 0.8, "prob_draw": 0.0, "prob_away": 0.2}
+        self.assertEqual(self.codes(tennis)["1"]["group"], "Match Winner")
+        cricket = {"league": "T20", "sport": "cricket", "home_team": "India",
+                   "away_team": "Australia", "prob_home": 0.74, "prob_draw": 0.0, "prob_away": 0.26}
+        self.assertEqual(self.codes(cricket)["1"]["group"], "Match Winner")
+
+    def test_tennis_prices_the_winner_and_the_sets_markets(self):
+        row = {"league": "ATP", "sport": "tennis", "competition": "China Open",
+               "home_team": "Carlos Alcaraz", "away_team": "Matteo Arnaldi",
+               "prob_home": 0.8, "prob_draw": 0.0, "prob_away": 0.2,
+               "goes_the_distance_prob": 0.35, "sets_line": 2.5, "sets_over_prob": 0.6}
+        codes = self.codes(row)
+        self.assertEqual(set(codes), {"1", "2", "DIST", "SETS_O2.5", "SETS_U2.5"})
+        self.assertEqual(codes["SETS_U2.5"]["prob"], 0.4)
+
+    def test_a_cricket_style_row_still_gets_a_match_winner_board(self):
+        row = {"league": "T20", "sport": "cricket", "home_team": "India", "away_team": "Australia",
+               "prob_home": 0.74, "prob_draw": 0.0, "prob_away": 0.26}
+        codes = self.codes(row)
+        self.assertEqual(codes["1"]["prob"], 0.74)
+        self.assertEqual(codes["1"]["label"], "India to Win")
+
+    def test_real_prices_still_win_and_still_only_cover_what_the_app_quotes(self):
+        codes = self.codes(football_row(0), {"1X": 1.2, "O2.5": 1.9})
+        self.assertEqual(set(codes), {"1X", "O2.5"})
+        self.assertEqual(codes["1X"]["odds_source"], "1xlite")
+
+
+class ProbabilityFloorTest(unittest.TestCase):
+    """A leg has to be genuinely likely, not merely cheap: the odds band alone lets a
+    bookmaker's margin put a short-priced pick on a slip the model does not believe in."""
+
+    def test_a_selection_inside_the_odds_band_but_below_the_floor_is_never_a_leg(self):
+        row = football_row(0, over_2_5_prob=0.66)
+        self.assertIsNone(slips.best_leg(row, {"O2.5": 1.35}))  # real price in band, 66% model
+
+    def test_the_same_selection_qualifies_once_it_clears_the_floor(self):
+        leg = slips.best_leg(football_row(0, over_2_5_prob=0.80), {"O2.5": 1.35})
+        self.assertEqual(leg["selection"], "O2.5")
+
+    def test_a_real_price_in_the_headline_band_still_has_to_clear_its_stricter_floor(self):
+        # 1.20 sits inside the headline band while the model rates the pick 72%: good enough
+        # for a combination slip, not for the headline one
+        row = football_row(0, over_2_5_prob=0.72)
+        main = slips.best_leg(row, {"O2.5": 1.20}, slips.MAIN_LEG_ODDS_MIN,
+                              slips.MAIN_LEG_ODDS_MAX, slips.MAIN_LEG_PROB_MIN)
+        self.assertIsNone(main)
+        self.assertEqual(slips.best_leg(row, {"O2.5": 1.20})["selection"], "O2.5")
+
+    def test_a_window_of_seventy_percent_picks_gets_no_headline_slip(self):
+        rows = [football_row(i, kickoff_hours=6 + i, over_2_5_prob=0.72, prob_home=0.72,
+                             prob_draw=0.1, prob_away=0.18, double_chance_1x_prob=0.72,
+                             double_chance_12_prob=0.72, over_1_5_prob=0.72, btts_yes_prob=0.72)
+                for i in range(6)]
+        entry = slips.build_filter(rows, prices={}, now=NOW, day_count=1)
+        self.assertIsNone(entry["main_slip"])
+        self.assertTrue(entry["slips"])  # the wider 70% floor still funds a combination slip
+
+
+class MultipleSlipsTest(unittest.TestCase):
+    """One headline slip plus up to five combinations, each landing in the 2.00-3.00 window
+    the page promises - and never the same bet twice."""
+
+    def test_a_window_publishes_no_more_than_five_combination_slips(self):
+        rows = [football_row(i, kickoff_hours=6 + i, over_2_5_prob=0.7 + (i % 5) * 0.04) for i in range(14)]
+        entry = next(f for f in slips.build_slips(rows, now=NOW)["filters"] if f["id"] == "weeks_2")
+        self.assertTrue(entry["main_slip"])
+        self.assertGreaterEqual(len(entry["slips"]), 2)
+        self.assertLessEqual(len(entry["slips"]), slips.MAX_SLIPS)
+        for slip in entry["slips"]:
+            self.assertGreaterEqual(slip["total_odds"], slips.SLIP_ODDS_MIN)
+            self.assertLessEqual(slip["total_odds"], slips.SLIP_ODDS_MAX)
+
+    def test_no_two_combination_slips_are_the_same_bet(self):
+        rows = [football_row(i, kickoff_hours=6 + i, over_2_5_prob=0.7 + (i % 5) * 0.04) for i in range(14)]
+        entry = next(f for f in slips.build_slips(rows, now=NOW)["filters"] if f["id"] == "weeks_2")
+        signatures = [frozenset(leg["match_key"] for leg in slip["legs"]) for slip in entry["slips"]]
+        self.assertEqual(len(signatures), len(set(signatures)))
+
+    def test_the_snapshot_publishes_its_own_slip_rules(self):
+        payload = slips.build_slips([football_row(0, kickoff_hours=6)], now=NOW)
+        self.assertEqual(payload["max_slips"], 5)
+        self.assertEqual(payload["min_leg_prob"], 0.70)
+        self.assertEqual(payload["slip_odds_range"], [2.0, 3.0])
+
+
+class EligibilityTagTest(unittest.TestCase):
+    """site_export decides who may go on a slip (big competitions always, smaller leagues only
+    with a club in Europe); the tag is authoritative when it is there."""
+
+    def test_a_fixture_the_export_tagged_out_is_never_a_leg(self):
+        out = football_row(0, league="DNK")
+        out["slip_eligible"] = False
+        kept = football_row(1, league="DNK")
+        kept["slip_eligible"] = True
+        entry = slips.build_filter([out, kept], prices={}, now=NOW, day_count=1)
+        self.assertEqual(entry["n_available"], 1)  # only the tagged-in fixture is available
+        self.assertTrue(all(leg["home_team"] == "Home 1"
+                            for slip in entry["slips"] for leg in slip["legs"]))
+
+    def test_without_the_tag_the_old_rule_stands(self):
+        self.assertFalse(slips.eligible(football_row(0, league="E1")))
+        self.assertTrue(slips.eligible(football_row(0, league="E0")))
+        self.assertTrue(slips.eligible({"league": "NBA", "sport": "basketball"}))
+
+
+class InsightTest(unittest.TestCase):
+    """Every leg explains itself from the fixture's own record: the two sides' last games and
+    their last meeting - and falls back to the model's number when the database has none."""
+
+    @staticmethod
+    def game(gf, ga, outcome):
+        return {"date": "2026-10-01", "opponent": "Someone", "venue": "H",
+                "goals_for": gf, "goals_against": ga, "outcome": outcome}
+
+    def context(self):
+        return {
+            "teams": {
+                "Home 0": [self.game(2, 1, "W"), self.game(3, 0, "W"), self.game(1, 0, "W"),
+                           self.game(2, 2, "D"), self.game(4, 1, "W")],
+                "Away 0": [self.game(1, 2, "L"), self.game(0, 1, "L"), self.game(2, 2, "D"),
+                           self.game(1, 0, "W"), self.game(0, 3, "L")],
+            },
+            "h2h": {"T1|Home 0|Away 0": {"summary": {"home_wins": 3, "away_wins": 1, "draws": 1},
+                                          "total": 5,
+                                          "meetings": [{"date": "2026-04-01", "home_team": "Home 0",
+                                                        "away_team": "Away 0", "home_goals": 3,
+                                                        "away_goals": 1}]}},
+        }
+
+    def test_a_result_leg_quotes_the_side_s_form_and_the_last_meeting(self):
+        # six fixtures so the headline slip can actually reach double money
+        rows = [football_row(i, kickoff_hours=6 + i, prob_home=0.85, prob_draw=0.06,
+                             prob_away=0.09, over_1_5_prob=0.72) for i in range(6)]
+        entry = slips.build_filter(rows, prices={}, now=NOW, day_count=1, context=self.context())
+        leg = entry["main_slip"]["legs"][0]
+        self.assertEqual(leg["selection"], "1")
+        self.assertIn("Home 0 have won 4 of their last 5", leg["insight"])
+        self.assertIn("3-1", leg["insight"])
+
+    def test_a_totals_leg_quotes_both_sides_scoring_record(self):
+        row = football_row(0, over_1_5_prob=0.87)
+        leg = slips.best_leg(row)
+        text = slips.insight_for(row, leg, self.context())
+        self.assertIn("Over 1.5 landed in", text)
+        self.assertIn("Away 0", text)
+
+    def test_a_both_teams_to_score_leg_quotes_how_often_each_side_saw_it(self):
+        row = football_row(0)
+        leg = {"match_key": "T1|Home 0|Away 0", "label": "Both Teams to Score", "group": "Both Teams to Score",
+               "selection": "BTTS", "prob": 0.53, "odds": 1.89}
+        text = slips.insight_for(row, leg, self.context())
+        self.assertIn("Both teams scored in 3 of Home 0's last 5 and 2 of Away 0's last 5", text)
+        self.assertIn("3-1", text)
+
+    def test_a_leg_without_any_history_falls_back_to_the_models_number(self):
+        leg = slips.best_leg(football_row(0))
+        text = slips.insight_for(football_row(0), leg, None)
+        self.assertIn("The model has", text)
+        self.assertIn("%", text)
+
+    def test_a_winner_reason_quotes_the_side_the_leg_actually_backs(self):
+        # an away win must quote the away side's record - the home side's form is no reason
+        row = {"league": "ATP", "sport": "tennis", "home_team": "Home 0", "away_team": "Away 0",
+               "prob_home": 0.2, "prob_draw": 0.0, "prob_away": 0.8}
+        leg = {"match_key": "ATP|Home 0|Away 0", "label": "Away 0 to win", "group": "Match Winner",
+               "selection": "2", "prob": 0.8, "odds": 1.25}
+        text = slips.insight_for(row, leg, self.context())
+        self.assertIn("Away 0 won 1 of their last 5 (LWDLL)", text)
+        self.assertNotIn("Home 0 won", text)
+
+    def test_a_form_reason_counts_scoring_games_instead_of_claiming_them_all(self):
+        row = football_row(0, prob_home=0.1, prob_draw=0.15, prob_away=0.75)
+        leg = {"match_key": "T1|Home 0|Away 0", "label": "Away Win", "group": "Result",
+               "selection": "2", "prob": 0.75, "odds": 1.33}
+        text = slips.insight_for(row, leg, self.context())
+        # Away 0 scored in 3 of their last 5 (1, 0, 2, 1, 0) - never "every one of them"
+        self.assertIn("scored in 3 of them", text)
+        self.assertNotIn("every one", text)
+
+    def test_a_basketball_total_quotes_the_model_projection(self):
+        row = {"league": "NBA", "sport": "basketball", "home_team": "Home 0", "away_team": "Away 0",
+               "prob_home": 0.6, "prob_draw": 0.0, "prob_away": 0.4,
+               "total_line": 224.5, "over_prob": 0.55, "under_prob": 0.45, "predicted_total": 227.4}
+        leg = {"match_key": "NBA|Home 0|Away 0", "label": "Over 224.5 Points", "group": "Total Points",
+               "selection": "O224.5", "prob": 0.55, "odds": 1.818}
+        text = slips.insight_for(row, leg, self.context())
+        self.assertIn("projects 227 points against a 224.5 line", text)
+
+    def test_a_sets_reason_quotes_both_players_records(self):
+        row = {"league": "ATP", "sport": "tennis", "home_team": "Home 0", "away_team": "Away 0",
+               "prob_home": 0.6, "prob_draw": 0.0, "prob_away": 0.4,
+               "goes_the_distance_prob": 0.4, "sets_line": 2.5, "sets_over_prob": 0.6}
+        leg = {"match_key": "ATP|Home 0|Away 0", "label": "Over 2.5 Sets", "group": "Sets",
+               "selection": "SETS_O2.5", "prob": 0.6, "odds": 1.667}
+        text = slips.insight_for(row, leg, self.context())
+        self.assertIn("Home 0 won 4 of their last 5", text)
+        self.assertIn("Away 0 won 1 of their last 5", text)
+
+    def test_every_leg_on_a_built_slip_carries_a_reason(self):
+        rows = [football_row(i, kickoff_hours=6 + i) for i in range(8)]
+        entry = slips.build_filter(rows, prices={}, now=NOW, day_count=1, context=self.context())
+        legs = list(entry["main_slip"]["legs"]) if entry["main_slip"] else []
+        for slip in entry["slips"]:
+            legs += slip["legs"]
+        self.assertTrue(legs)
+        self.assertTrue(all(leg.get("insight") for leg in legs))
+
+
+class PoolTest(unittest.TestCase):
+    """The fixture pool the page's editor works from: every fixture it may add, with its whole
+    board and one reason-line per market shelf."""
+
+    @staticmethod
+    def rows(count=10):
+        return [football_row(i, kickoff_hours=6 + i, expected_goals_home=1.8, expected_goals_away=0.9)
+                for i in range(count)]
+
+    def test_the_snapshot_carries_a_pool_of_editable_fixtures(self):
+        payload = slips.build_slips(self.rows(), now=NOW)
+        self.assertTrue(payload["pool"])
+        entry = payload["pool"][0]
+        self.assertTrue(entry["markets"])
+        for market in entry["markets"]:
+            self.assertIn(market["group"], entry["insights"])
+        self.assertTrue(all(key in entry for key in
+                            ("match_key", "league", "sport", "kickoff_utc", "home_team", "away_team")))
+
+    def test_every_published_leg_can_be_edited_against_the_pool(self):
+        payload = slips.build_slips(self.rows(14), now=NOW)
+        keys = {entry["match_key"] for entry in payload["pool"]}
+        for f in payload["filters"]:
+            for slip in ([f["main_slip"]] if f["main_slip"] else []) + list(f["slips"]):
+                for leg in slip["legs"]:
+                    self.assertIn(leg["match_key"], keys)
+
+    def test_a_leg_from_an_editable_pool_leg_keeps_its_market_and_reason(self):
+        payload = slips.build_slips(self.rows(), now=NOW)
+        entry = payload["pool"][0]
+        market = next(m for m in entry["markets"] if m["group"] in entry["insights"])
+        self.assertEqual(entry["insights"][market["group"]],
+                         slips.insight_for(entry, {"match_key": entry["match_key"], "label": market["label"],
+                                                   "group": market["group"], "prob": market["prob"],
+                                                   "odds": market["odds"], "selection": market["code"]}, None))
+
+
 class WriteTest(unittest.TestCase):
     def test_the_snapshot_is_valid_json_and_has_no_stray_temp_file(self):
         tmp = tempfile.TemporaryDirectory()

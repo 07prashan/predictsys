@@ -143,6 +143,24 @@ def fixture_rank(row: dict, european: set) -> int:
     return rank if in_europe else rank + OUT_OF_EUROPE_OFFSET
 
 
+def slip_eligible(row: dict, european: set) -> bool:
+    """Whether a fixture may contribute a leg to a prediction slip: never a second division,
+    and among the smaller leagues only the clubs contesting Europe - the sides that keep
+    finishing top of their own league and taking its European place (Copenhagen, Celtic,
+    Olympiacos, Bodoe/Glimt). Every big competition is in without a test. A run with no
+    continental fixtures in the database can't tell the small leagues apart, so it keeps
+    today's rule (every top flight) rather than emptying the slips."""
+    if (row.get("sport") or "football") != "football":
+        return True  # the tours and the NBA are already the top tier of their sport
+    if row["league"] in slips.NON_TOP_TIER_LEAGUES:
+        return False
+    if row["league"] in MAJOR_LEAGUES:
+        return True
+    if not european:
+        return True
+    return row.get("home_team") in european or row.get("away_team") in european
+
+
 # Not every competition deserves a full fixture list. The leagues below are published only
 # when the model is confident: they were named as the "strong picks only" side of the site,
 # so a full list of every fixture - especially in the thinner top flights - would be mostly
@@ -170,6 +188,7 @@ H2H_MEETINGS = 10  # meetings listed per pair (the summary always counts every o
 
 _UPCOMING_COLUMNS = """league, sport, competition, round, match_date, kickoff_utc, home_team, away_team,
     prob_home, prob_draw, prob_away, predicted_outcome, correct_score_home, correct_score_away,
+    expected_goals_home, expected_goals_away,
     btts_yes_prob, over_2_5_prob, markets_json, best_pick_market, best_pick_label, best_pick_prob,
     home_logo, away_logo"""
 _HISTORY_COLUMNS = _UPCOMING_COLUMNS + ", actual_outcome, correct, actual_home_goals, actual_away_goals"
@@ -419,9 +438,18 @@ def h2h(conn: sqlite3.Connection, league: str, home: str, away: str) -> dict:
     return {"summary": summary, "total": len(meetings), "meetings": shown}
 
 
-def filter_slips(upcoming_rows: list, now: dt.datetime, live_odds: bool = False) -> dict:
+def _page_rows(rows: list) -> list:
+    """The prediction rows as the page reads them - minus expected goals, which the export
+    needs (the slips' derived markets and reason-lines are written from them) but the page
+    never displays, so shipping them would only make every payload bigger."""
+    return [{k: v for k, v in row.items() if not k.startswith("expected_goals_")} for row in rows]
+
+
+def filter_slips(upcoming_rows: list, now: dt.datetime, live_odds: bool = False, context: dict = None) -> dict:
     """The filter slips snapshot (slips.py). Real 1xLite prices are only fetched when asked
-    for - the offline export (and its tests) must never depend on a third-party feed."""
+    for - the offline export (and its tests) must never depend on a third-party feed - and
+    `context` (the two sides' recent games, their last meeting) is what each leg's reason-line
+    is written from."""
     odds = {}
     # only the fixtures inside the widest slip window can ever appear on a slip, so the
     # (rate-limited) betting feed is asked about those and nothing else
@@ -434,7 +462,7 @@ def filter_slips(upcoming_rows: list, now: dt.datetime, live_odds: bool = False)
             odds = xlite.odds_for_rows(in_window)
         except Exception as exc:  # noqa: BLE001 - a betting feed being down must not sink the export
             print(f"  (live odds unavailable - slips use model prices: {exc})")
-    return slips.build_slips(upcoming_rows, now=now, odds=odds)
+    return slips.build_slips(upcoming_rows, now=now, odds=odds, context=context)
 
 
 def export_site(
@@ -456,6 +484,7 @@ def export_site(
     european = european_clubs(conn, now)
     for row in upcoming_rows:
         row["fixture_rank"] = fixture_rank(row, european)
+        row["slip_eligible"] = slip_eligible(row, european)
 
     # each team's next fixture, for the profile page
     next_fixtures = {}
@@ -469,22 +498,31 @@ def export_site(
 
     leagues = sorted({r["league"] for r in upcoming_rows + history_rows} | {r["league"] for r in _query_table(conn, "team_ratings", "SELECT DISTINCT league FROM team_ratings")})
     n_teams = n_pairs = 0
+    # what each slip leg's reason-line is written from: every side's last games (already read
+    # for the team pages) and the last meeting of each pair (already read for the h2h pages),
+    # keyed the way slips.match_key() names a fixture - no extra queries for either.
+    team_recent, h2h_map = {}, {}
     for league in leagues:
         profiles = team_profiles(conn, league, logos, next_fixtures)
         if profiles:
             _write_json(out_dir / "teams" / f"{league}.json", profiles)
             n_teams += len(profiles)
+            for name, profile in profiles.items():
+                if profile.get("recent_matches") and name not in team_recent:
+                    team_recent[name] = profile["recent_matches"]
         pairs = {(r["home_team"], r["away_team"]) for r in upcoming_rows + history_rows if r["league"] == league}
         if pairs:
-            _write_json(out_dir / "h2h" / f"{league}.json", {f"{h}|{a}": h2h(conn, league, h, a) for h, a in sorted(pairs)})
+            pair_data = {f"{h}|{a}": h2h(conn, league, h, a) for h, a in sorted(pairs)}
+            _write_json(out_dir / "h2h" / f"{league}.json", pair_data)
+            h2h_map.update(pair_data)
             n_pairs += len(pairs)
 
-    slip_payload = filter_slips(upcoming_rows, now, live_odds)
+    slip_payload = filter_slips(upcoming_rows, now, live_odds, context={"teams": team_recent, "h2h": h2h_map})
     slips.write_slips(slip_payload, out_dir / "slips.json")
 
     _write_json(out_dir / "scoreboard.json", scoreboard(conn))
-    _write_json(out_dir / "history.json", history_rows)
-    _write_json(out_dir / "predictions.json", {"generated_at": _iso(now), "league_order": LEAGUE_POPULARITY, "rows": upcoming_rows})
+    _write_json(out_dir / "history.json", _page_rows(history_rows))
+    _write_json(out_dir / "predictions.json", {"generated_at": _iso(now), "league_order": LEAGUE_POPULARITY, "rows": _page_rows(upcoming_rows)})
     n_slips = sum(len(f["slips"]) for f in slip_payload["filters"])
     return {
         "upcoming": len(upcoming_rows), "history": len(history_rows), "teams": n_teams,
