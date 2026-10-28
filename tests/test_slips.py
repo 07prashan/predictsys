@@ -7,6 +7,7 @@ Run from the project root:  python -m unittest discover -s tests -t .
 
 import datetime as dt
 import json
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -721,6 +722,75 @@ class PoolTest(unittest.TestCase):
                          slips.insight_for(entry, {"match_key": entry["match_key"], "label": market["label"],
                                                    "group": market["group"], "prob": market["prob"],
                                                    "odds": market["odds"], "selection": market["code"]}, None))
+
+
+class DailyCodeTest(unittest.TestCase):
+    """One code per slip per betting day: minted once, reused for every build that day, and
+    reset together at 4am Kathmandu - so a copied code keeps naming the same slip."""
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.addCleanup(self.conn.close)
+
+    @staticmethod
+    def codes_in(payload):
+        return [slip["code"] for f in payload["filters"]
+                for slip in ([f["main_slip"]] if f["main_slip"] else []) + list(f["slips"])]
+
+    @staticmethod
+    def rows(count=8):
+        return [football_row(i, kickoff_hours=6 + i) for i in range(count)]
+
+    def test_the_betting_day_turns_over_at_4am_kathmandu(self):
+        # 8 Oct 22:14 UTC is 03:59 in Kathmandu - still the old betting day...
+        before = slips.day_bucket(dt.datetime(2026, 10, 8, 22, 14, tzinfo=dt.timezone.utc))
+        # ...and a minute later the clock reads 4:00, which is where a betting day begins
+        after = slips.day_bucket(dt.datetime(2026, 10, 8, 22, 15, tzinfo=dt.timezone.utc))
+        self.assertEqual(after, before + 1)
+        self.assertEqual(slips.day_bucket(NOW), slips.day_bucket(slips.day_start(NOW)))
+        self.assertNotEqual(slips.day_bucket(NOW), slips.day_bucket(slips.day_start(NOW) - dt.timedelta(minutes=1)))
+
+    def test_a_slot_keeps_its_code_for_the_whole_day(self):
+        first = slips.DailyCodes(self.conn, NOW).code_for("1 Day|main|0")
+        self.assertEqual(len(first), slips.CODE_LENGTH)
+        self.assertTrue(set(first) <= set(slips.CODE_ALPHABET))
+        # a later build the same day (a 2-hourly refresh) reads the same code back
+        later = slips.DailyCodes(self.conn, NOW + dt.timedelta(hours=6))
+        self.assertEqual(later.code_for("1 Day|main|0"), first)
+
+    def test_the_next_betting_day_mints_a_fresh_code_and_drops_yesterdays(self):
+        today = slips.DailyCodes(self.conn, NOW).code_for("1 Day|main|0")
+        tomorrow = slips.DailyCodes(self.conn, NOW + dt.timedelta(days=1))
+        fresh = tomorrow.code_for("1 Day|main|0")
+        self.assertNotEqual(fresh, today)
+        rows = self.conn.execute("SELECT day_bucket, slot FROM slip_codes").fetchall()
+        self.assertEqual(rows, [(tomorrow.bucket, "1 Day|main|0")])  # yesterday's row is gone
+
+    def test_two_slips_never_share_a_code_on_the_same_day(self):
+        codes = slips.DailyCodes(self.conn, NOW)
+        minted = {codes.code_for(f"1 Day|combo|{i}") for i in range(50)}
+        self.assertEqual(len(minted), 50)
+
+    def test_a_rebuilt_slip_keeps_its_code_even_when_the_price_moves(self):
+        # the reason codes are looked up rather than hashed: 1xLite repricing the same slip
+        # must not silently invalidate the code someone copied this morning
+        first = slips.build_slips(self.rows(), now=NOW, codes=slips.DailyCodes(self.conn, NOW))
+        repriced = slips.build_slips(
+            [football_row(i, kickoff_hours=6 + i, over_1_5_prob=0.80) for i in range(8)],
+            now=NOW + dt.timedelta(hours=3), codes=slips.DailyCodes(self.conn, NOW + dt.timedelta(hours=3)))
+        for a, b in zip(first["filters"], repriced["filters"]):
+            if not (a["main_slip"] and b["main_slip"]):
+                continue
+            self.assertEqual(a["main_slip"]["code"], b["main_slip"]["code"])
+        self.assertTrue(any(a["main_slip"] and b["main_slip"] and
+                            a["main_slip"]["total_odds"] != b["main_slip"]["total_odds"]
+                            for a, b in zip(first["filters"], repriced["filters"])))  # prices really did move
+
+    def test_every_code_in_a_snapshot_is_unique(self):
+        payload = slips.build_slips(self.rows(20), now=NOW, codes=slips.DailyCodes(self.conn, NOW))
+        codes = self.codes_in(payload)
+        self.assertTrue(codes)
+        self.assertEqual(len(codes), len(set(codes)))
 
 
 class WriteTest(unittest.TestCase):

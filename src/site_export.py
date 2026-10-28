@@ -445,11 +445,13 @@ def _page_rows(rows: list) -> list:
     return [{k: v for k, v in row.items() if not k.startswith("expected_goals_")} for row in rows]
 
 
-def filter_slips(upcoming_rows: list, now: dt.datetime, live_odds: bool = False, context: dict = None) -> dict:
+def filter_slips(upcoming_rows: list, now: dt.datetime, live_odds: bool = False, context: dict = None,
+                 codes=None) -> dict:
     """The filter slips snapshot (slips.py). Real 1xLite prices are only fetched when asked
     for - the offline export (and its tests) must never depend on a third-party feed - and
     `context` (the two sides' recent games, their last meeting) is what each leg's reason-line
-    is written from."""
+    is written from. `codes` is the DailyCodes register holding one code per slip per betting
+    day (optional, so the offline export works without a database table for it)."""
     odds = {}
     # only the fixtures inside the widest slip window can ever appear on a slip, so the
     # (rate-limited) betting feed is asked about those and nothing else
@@ -462,7 +464,7 @@ def filter_slips(upcoming_rows: list, now: dt.datetime, live_odds: bool = False,
             odds = xlite.odds_for_rows(in_window)
         except Exception as exc:  # noqa: BLE001 - a betting feed being down must not sink the export
             print(f"  (live odds unavailable - slips use model prices: {exc})")
-    return slips.build_slips(upcoming_rows, now=now, odds=odds, context=context)
+    return slips.build_slips(upcoming_rows, now=now, odds=odds, context=context, codes=codes)
 
 
 def export_site(
@@ -517,7 +519,8 @@ def export_site(
             h2h_map.update(pair_data)
             n_pairs += len(pairs)
 
-    slip_payload = filter_slips(upcoming_rows, now, live_odds, context={"teams": team_recent, "h2h": h2h_map})
+    slip_payload = filter_slips(upcoming_rows, now, live_odds, context={"teams": team_recent, "h2h": h2h_map},
+                                codes=slips.DailyCodes(conn, now))
     slips.write_slips(slip_payload, out_dir / "slips.json")
 
     _write_json(out_dir / "scoreboard.json", scoreboard(conn))

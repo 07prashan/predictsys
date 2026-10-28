@@ -1172,8 +1172,43 @@ const BET_CODE_PREFIX = "PSB1-";
 const CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const CODE_LENGTH = 5;
 const SAVED_SLIPS_KEY = "predictsys.saved_slips";
+// code -> the PSB1- payload that code named, remembered the moment it is copied or loaded.
+// Codes are minted one per slip per betting day and reset at 4am Kathmandu, so this is what
+// lets yesterday's code still open its slip (with a note) instead of just saying "incorrect".
+const CODE_INDEX_KEY = "predictsys.code_index";
 let renderedSlips = [];
 let loadedSlip = null;
+let codeNotice = "";
+
+function readCodeIndex() {
+  try {
+    const map = JSON.parse(localStorage.getItem(CODE_INDEX_KEY) || "{}");
+    return map && typeof map === "object" && !Array.isArray(map) ? map : {};
+  } catch (err) {
+    return {};
+  }
+}
+
+function rememberCode(code, payload) {
+  if (!code || !payload) return;
+  try {
+    const map = readCodeIndex();
+    map[code] = payload;
+    const keys = Object.keys(map);
+    keys.slice(0, Math.max(0, keys.length - 60)).forEach((k) => delete map[k]); // keep the newest 60
+    localStorage.setItem(CODE_INDEX_KEY, JSON.stringify(map));
+  } catch (err) {
+    // storage blocked or full - codes simply expire at the daily reset instead
+  }
+}
+
+// The sentence the page shows when a code has been superseded by the daily reset. The reset
+// itself is defined by the feed's own day settings, so this can never disagree with them.
+function resetNotice() {
+  const hour = (slipsData && slipsData.day_start_hour) || 4;
+  const tz = (slipsData && slipsData.day_start_tz) || "Kathmandu time";
+  return `Slip codes reset at ${hour}:00 ${tz} - that one was minted on an earlier day, so your saved copy is open instead.`;
+}
 
 function decodeBetCode(text) {
   const code = (text || "").trim();
@@ -1635,6 +1670,7 @@ function findPublishedSlip(code) {
 // Open the slip behind a code: our five characters, or a full PSB1- payload pasted from a
 // saved slip. Throws with a sentence the page can show when nothing matches.
 function openSlipByCode(text) {
+  codeNotice = "";
   const raw = String(text || "").trim();
   if (!raw) throw new Error("Type a slip code first.");
   if (raw.toUpperCase().startsWith(BET_CODE_PREFIX)) {
@@ -1649,6 +1685,7 @@ function openSlipByCode(text) {
   }
   const published = findPublishedSlip(code);
   if (published) {
+    rememberCode(code, published.code_payload);
     loadedSlip = published;
     return published;
   }
@@ -1660,12 +1697,27 @@ function openSlipByCode(text) {
     loadedSlip = slip;
     return slip;
   }
-  throw new Error(`No slip in the current feed has the code ${code}. Codes name the slips built for the current window, so an older one stops resolving - save a slip to keep it on this device.`);
+  // not in today's feed: if this device ever saw the code, it kept the slip itself
+  const cached = readCodeIndex()[code];
+  if (cached) {
+    try {
+      const slip = decodeBetCode(cached);
+      slip.code = code;
+      slip.code_payload = cached;
+      loadedSlip = slip;
+      codeNotice = resetNotice();
+      return slip;
+    } catch (err) {
+      // a damaged cache entry is no reason to hide the honest error below
+    }
+  }
+  throw new Error(`No slip in the current feed has the code ${code}. Codes are rebuilt for the current window at ${((slipsData && slipsData.day_start_hour) || 4)}:00 ${((slipsData && slipsData.day_start_tz) || "Kathmandu time")} each day, so an older one stops resolving - save a slip to keep it on this device.`);
 }
 
-function setSlipCodeError(message) {
+function setSlipCodeError(message, notice = false) {
   const box = document.getElementById("betcode-error");
   box.textContent = message || "";
+  box.classList.toggle("notice", Boolean(notice));
   box.hidden = !message;
 }
 
@@ -1677,6 +1729,7 @@ function setUpSlipCodes() {
       if (!slip) return;
       const action = actionBtn.dataset.slipAction;
       if (action === "copy-code") {
+        rememberCode(slip.code, slip.code_payload);
         flashButton(actionBtn, (await copyText(slip.code || "")) ? "Copied \u2713" : "Copy failed");
       } else if (action === "copy-text") {
         flashButton(actionBtn, (await copyText(slipPlainText(slip))) ? "Copied \u2713" : "Copy failed");
@@ -1701,7 +1754,7 @@ function setUpSlipCodes() {
     } else if (action === "load") {
       try {
         openSlipByCode(entry.payload || entry.code);
-        setSlipCodeError("");
+        setSlipCodeError(codeNotice, Boolean(codeNotice));
         renderSlips();
       } catch (err) {
         setSlipCodeError(err.message);
@@ -1717,7 +1770,7 @@ function setUpSlipCodes() {
   const load = () => {
     try {
       openSlipByCode(input.value);
-      setSlipCodeError("");
+      setSlipCodeError(codeNotice, Boolean(codeNotice));
       input.value = "";
       renderSlips();
       // the slip is already on screen by now - scrolling is a nicety, so a browser without

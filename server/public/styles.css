@@ -974,6 +974,8 @@ footer a { color: var(--teal); }
 .betcode-load .chip { padding: 7px 14px; }
 .betcode-note { font-size: 0.78rem; color: var(--text-muted); max-width: 66ch; }
 .betcode-error { color: var(--incorrect); font-size: 0.8rem; margin: -8px 0 12px; }
+/* not a mistake, just yesterday's code: the daily reset note sits quieter than an error */
+.betcode-error.notice { color: var(--text-muted); }
 
 .slip-actions {
   display: flex;

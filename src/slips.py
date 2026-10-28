@@ -50,6 +50,7 @@ import hashlib
 import json
 import math
 import os
+import secrets
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -660,6 +661,8 @@ def build_main_slip(legs: list):
 # Two codes are carried, because they answer different questions:
 #   code          5 characters - what a person types or reads out; it points at a slip in
 #                 this snapshot, so it is short but only resolves while that slip is listed.
+#                 One per slip per betting day: DailyCodes reuses the same code all day and
+#                 the whole board mints fresh ones at 4am Kathmandu.
 #   code_payload  the whole slip packed into one longer string (PSB1-<base64url>). It
 #                 carries the matches, picks and prices itself, so "Save slip" keeps one
 #                 loadable on this device even after the data underneath has been rebuilt.
@@ -667,6 +670,73 @@ CODE_PREFIX = "PSB1-"
 # 32 symbols: 0/O and 1/I are left out so a code read off a screen can't be mistyped.
 CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 CODE_LENGTH = 5
+
+
+def day_bucket(now: dt.datetime) -> int:
+    """Which betting day `now` belongs to - an integer that changes at 4am Kathmandu, the
+    same boundary day_start() draws. Everything the code system says is "today" keys off
+    this number, so the page and the feed can never disagree about which day it is."""
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=dt.timezone.utc)
+    local = now.astimezone(DAY_TZ) - dt.timedelta(hours=DAY_START_HOUR)
+    return local.date().toordinal()
+
+
+def mint_code(taken: set) -> str:
+    """A random 5-character code none of `taken` already uses - bookmaker-style, carrying no
+    information about the slip, so re-pricing a slip can never change its code."""
+    for _ in range(1000):
+        code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
+        if code not in taken:
+            return code
+    raise RuntimeError("could not mint a unique slip code")
+
+
+class DailyCodes:
+    """One code per slip per betting day, kept in the prediction database.
+
+    A code a visitor copies has to keep naming the same slip for the whole day, so it cannot
+    be derived from the slip's contents - the moment 1xLite moves or the model refits, the
+    contents change and a content-hashed code would silently stop resolving. Instead each
+    slip's *slot* (its window plus its position in that window) is mapped to a random code
+    the first time a build sees it on a given day, and every later build that day reads the
+    same code back out of `slip_codes` - whatever the slip now holds. When the betting day
+    rolls over at 4am Kathmandu the bucket changes, so the whole board mints fresh codes and
+    yesterday's rows are dropped.
+
+    The table travels with data/predictions.db, which scripts/ci_state.sh already packs and
+    restores between CI runs - so the mapping survives the empty disk of a hosted runner.
+    """
+
+    def __init__(self, conn, now: dt.datetime = None):
+        self.conn = conn
+        self.bucket = day_bucket(now or dt.datetime.now(dt.timezone.utc))
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS slip_codes ("
+            " day_bucket INTEGER NOT NULL,"
+            " slot TEXT NOT NULL,"
+            " code TEXT NOT NULL,"
+            " minted_at TEXT NOT NULL,"
+            " PRIMARY KEY (day_bucket, slot)"
+            ")"
+        )
+        conn.execute("DELETE FROM slip_codes WHERE day_bucket < ?", (self.bucket,))
+        conn.commit()
+
+    def code_for(self, slot: str) -> str:
+        row = self.conn.execute(
+            "SELECT code FROM slip_codes WHERE day_bucket = ? AND slot = ?", (self.bucket, slot)
+        ).fetchone()
+        if row:
+            return row[0]
+        used = {r[0] for r in self.conn.execute("SELECT code FROM slip_codes WHERE day_bucket = ?", (self.bucket,))}
+        code = mint_code(used)
+        self.conn.execute(
+            "INSERT INTO slip_codes (day_bucket, slot, code, minted_at) VALUES (?, ?, ?, ?)",
+            (self.bucket, slot, code, dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
+        )
+        self.conn.commit()
+        return code
 
 
 def short_code(slip: dict, window_label: str, kind: str, salt: int = 0) -> str:
@@ -682,21 +752,28 @@ def short_code(slip: dict, window_label: str, kind: str, salt: int = 0) -> str:
     return "".join(out)
 
 
-def assign_slip_codes(filters: list) -> None:
+def assign_slip_codes(filters: list, codes=None) -> None:
     """Give every slip in the snapshot its two codes, never handing out the same 5-character
-    code twice (two slips sharing a code would make one of them unreachable)."""
+    code twice (two slips sharing a code would make one of them unreachable).
+
+    With `codes` (the site's DailyCodes) a slip keeps one code for the whole betting day -
+    see that class. Without it (the standalone tool, the tests) codes are minted
+    deterministically from the slip itself, which is only good while the slip is unchanged."""
     used = set()
     for entry in filters:
         label = entry.get("label") or ""
         slips_in_entry = ([("main", entry["main_slip"])] if entry.get("main_slip") else []) + [
             ("combo", slip) for slip in entry.get("slips") or []
         ]
-        for kind, slip in slips_in_entry:
-            salt = 0
-            code = short_code(slip, label, kind)
-            while code in used:
-                salt += 1
-                code = short_code(slip, label, kind, salt)
+        for position, (kind, slip) in enumerate(slips_in_entry):
+            if codes is not None:
+                code = codes.code_for(f"{label}|{kind}|{position}")
+            else:
+                salt = 0
+                code = short_code(slip, label, kind)
+                while code in used:
+                    salt += 1
+                    code = short_code(slip, label, kind, salt)
             used.add(code)
             slip["code"] = code
             slip["code_payload"] = encode_slip_code(slip, label, kind)
@@ -1046,11 +1123,14 @@ def build_pool(rows, prices: dict, now: dt.datetime, context: dict, filters: lis
     return [pool_entry(row, _pool_markets(entries), context) for _req, _rank, _neg, row, entries in candidates[:limit]]
 
 
-def build_slips(rows, now: dt.datetime = None, odds: dict = None, context: dict = None) -> dict:
+def build_slips(rows, now: dt.datetime = None, odds: dict = None, context: dict = None,
+                 codes=None) -> dict:
     """The whole snapshot: `rows` is whatever the site would show as upcoming, `odds` is
     {(league, home_team, away_team): {code: price}} from xlite (optional), and `context` is
     the recent-results/head-to-head evidence the reason-lines are written from (optional -
-    without it a leg still gets the model's own number as its reason)."""
+    without it a leg still gets the model's own number as its reason). `codes` is the
+    DailyCodes register that keeps one code per slip for the whole betting day (optional -
+    without it codes are minted from the slip's own contents)."""
     now = now or dt.datetime.now(dt.timezone.utc)
     prices = odds or {}
     filters = []
@@ -1060,7 +1140,7 @@ def build_slips(rows, now: dt.datetime = None, odds: dict = None, context: dict 
         entry["label"] = label
         entry["day_count"] = day_count
         filters.append(entry)
-    assign_slip_codes(filters)
+    assign_slip_codes(filters, codes)
     return {
         "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "day_start_hour": DAY_START_HOUR,
@@ -1094,19 +1174,20 @@ def main() -> None:
     import site_export
     import storage
 
+    now = dt.datetime.now(dt.timezone.utc)
     conn = storage.connect()
     try:
-        rows = site_export.upcoming(conn, site_export.Logos(conn), dt.datetime.now(dt.timezone.utc))
+        rows = site_export.upcoming(conn, site_export.Logos(conn), now)
+        odds = {}
+        try:
+            import xlite
+
+            odds = xlite.odds_for_rows(rows)
+        except Exception as exc:  # noqa: BLE001 - the standalone tool works offline too
+            print(f"  (live odds unavailable - using model prices: {exc})")
+        payload = build_slips(rows, now=now, odds=odds, codes=DailyCodes(conn, now))
     finally:
         conn.close()
-    odds = {}
-    try:
-        import xlite
-
-        odds = xlite.odds_for_rows(rows)
-    except Exception as exc:  # noqa: BLE001 - the standalone tool works offline too
-        print(f"  (live odds unavailable - using model prices: {exc})")
-    payload = build_slips(rows, odds=odds)
     path = write_slips(payload)
     print(f"{sum(len(f['slips']) for f in payload['filters'])} slips written -> {path}")
 
